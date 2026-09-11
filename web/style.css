@@ -1,0 +1,263 @@
+/* ── Palette roles ───────────────────────────────────────────────────────────
+   Values from the validated reference palette. Categorical slots in use: two
+   (blue = folder, orange = file); validated all-pairs in both modes, so the
+   treemap is safe under every CVD simulation. Everything else is ink, surface
+   or a reserved status token. */
+.viz-root {
+  color-scheme: light;
+  --plane:          #f9f9f7;
+  --surface-1:      #fcfcfb;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #898781;
+  --gridline:       #e1e0d9;
+  --baseline:       #c3c2b7;
+  --border:         rgba(11, 11, 11, 0.10);
+
+  --series-1:       #2a78d6;   /* the one categorical slot in use */
+  --neutral-mark:   #c3c2b7;   /* aggregated "other" — deliberately not a slot */
+  --tile:           #1c5cab;   /* blue ramp step 550; white label = 7.1:1 */
+  --tile-ink:       #ffffff;
+  --tile-rest-ink:  #0b0b0b;
+
+  --status-good:     #0ca30c;
+  --status-warning:  #fab219;
+  --status-critical: #d03b3b;
+
+  /* Meter tracks: a lighter step of the fill's own ramp, so state reads across
+     the whole bar rather than only the filled part. */
+  --track-ok:   #cde2fb;
+  --track-warn: #fdeac4;
+  --track-crit: #f4d2d2;
+  --ghost:      rgba(11, 11, 11, 0.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --plane:          #0d0d0d;
+    --surface-1:      #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --gridline:       #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255, 255, 255, 0.10);
+    --series-1:       #3987e5;
+    --neutral-mark:   #55544f;
+    --tile:           #256abf;
+    --tile-ink:       #ffffff;
+    --tile-rest-ink:  #ffffff;
+    --track-ok:       #184f95;
+    --track-warn:     #5c410a;
+    --track-crit:     #4f1a1a;
+    --ghost:          rgba(255, 255, 255, 0.06);
+  }
+}
+:root[data-theme="dark"] .viz-root {
+  color-scheme: dark;
+  --plane:          #0d0d0d;
+  --surface-1:      #1a1a19;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #898781;
+  --gridline:       #2c2c2a;
+  --baseline:       #383835;
+  --border:         rgba(255, 255, 255, 0.10);
+  --series-1:       #3987e5;
+  --neutral-mark:   #55544f;
+  --tile:           #256abf;
+  --tile-ink:       #ffffff;
+  --tile-rest-ink:  #ffffff;
+  --track-ok:       #184f95;
+  --track-warn:     #5c410a;
+  --track-crit:     #4f1a1a;
+  --ghost:          rgba(255, 255, 255, 0.06);
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  padding: 0 0 env(safe-area-inset-bottom);
+  background: var(--plane);
+  color: var(--text-primary);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  transition: opacity .25s ease;
+}
+body.is-stale { opacity: .55; }          /* hold the last render, never a skeleton */
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
+/* ── Top bar ─────────────────────────────────────────────────────────────── */
+.topbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 10px 16px calc(10px + env(safe-area-inset-top)) 16px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  background: color-mix(in srgb, var(--plane) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.topbar h1 {
+  margin: 0; font-size: 15px; font-weight: 650; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text-secondary);
+}
+.topbar-meta { display: flex; align-items: center; gap: 12px; }
+
+.conn { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.conn i {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-muted); flex: none;
+}
+.conn.live i { background: var(--status-good); }
+.conn.down i { background: var(--status-critical); }
+
+main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid; gap: 12px; }
+
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+}
+.card-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; margin-bottom: 12px;
+}
+.card-head h2 {
+  margin: 0; font-size: 12px; font-weight: 650; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-secondary);
+}
+.muted { color: var(--text-muted); }
+.small { font-size: 12px; }
+
+/* ── Hero figure (exactly one on the page) ───────────────────────────────── */
+.hero-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.hero {
+  font-size: 56px; line-height: 1; font-weight: 620;
+  letter-spacing: -.02em; color: var(--text-primary);
+  font-variant-numeric: proportional-nums;     /* never tabular at display size */
+}
+.hero-unit { font-size: 22px; font-weight: 500; color: var(--text-muted); margin-left: 3px; }
+.hero-label { margin-top: 6px; }
+
+.minitable { margin: 0; display: grid; grid-template-columns: auto auto; gap: 3px 12px; align-content: start; }
+.minitable dt { color: var(--text-muted); font-size: 12px; }
+.minitable dd { margin: 0; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+
+/* Per-core bars: nominal categories, so one hue for all of them — the height
+   already carries the value and a ramp would double-encode it. */
+.cores { display: flex; align-items: stretch; gap: 2px; height: 34px; margin-top: 14px; }
+.cores div { flex: 1; background: var(--track-ok); border-radius: 2px; position: relative; overflow: hidden; }
+.cores div span {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: var(--series-1); border-radius: 2px;
+  transition: height .3s ease;
+}
+
+/* ── Meters ──────────────────────────────────────────────────────────────── */
+.meters { display: grid; gap: 13px; }
+.meter-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 8px; margin-bottom: 5px; font-size: 13px;
+}
+.meter-name { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meter-val { color: var(--text-primary); font-variant-numeric: tabular-nums; flex: none; font-size: 12px; }
+.meter-val b { font-weight: 620; }
+.meter-track { height: 9px; border-radius: 5px; background: var(--track-ok); overflow: hidden; }
+.meter-fill { height: 100%; border-radius: 5px; background: var(--series-1); transition: width .35s ease; }
+.meter.warn .meter-track { background: var(--track-warn); }
+.meter.warn .meter-fill  { background: var(--status-warning); }
+.meter.crit .meter-track { background: var(--track-crit); }
+.meter.crit .meter-fill  { background: var(--status-critical); }
+/* Status hue never carries meaning alone: the % and an icon ride alongside. */
+.meter .flag { font-size: 11px; margin-right: 4px; }
+.meter.ok .flag { display: none; }
+
+/* ── Buttons & chips ─────────────────────────────────────────────────────── */
+.btn {
+  font: inherit; font-size: 12px; padding: 6px 12px; min-height: 32px;
+  border-radius: 8px; border: 1px solid var(--border);
+  background: var(--ghost); color: var(--text-secondary); cursor: pointer;
+}
+.btn:active { transform: translateY(1px); }
+.btn[disabled] { opacity: .5; cursor: default; }
+.btn-quiet { border-color: transparent; background: transparent; }
+
+.rootbar, .sortbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.chip {
+  font: inherit; font-size: 12px; padding: 5px 11px; min-height: 30px;
+  border-radius: 999px; border: 1px solid var(--border);
+  background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.chip.is-on { background: var(--series-1); border-color: transparent; color: #fff; }
+
+/* ── Breadcrumb ──────────────────────────────────────────────────────────── */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-bottom: 8px; font-size: 12px; }
+.crumbs button {
+  font: inherit; font-size: 12px; background: none; border: 0; padding: 4px 5px;
+  color: var(--series-1); cursor: pointer; border-radius: 5px; min-height: 28px;
+}
+.crumbs button[disabled] { color: var(--text-muted); cursor: default; }
+.crumbs .sep { color: var(--text-muted); }
+
+/* ── Treemap ─────────────────────────────────────────────────────────────── */
+.treemap-wrap { width: 100%; }
+#treemap { display: block; width: 100%; height: 300px; border-radius: 10px; overflow: hidden; touch-action: manipulation; }
+#treemap .tile { cursor: pointer; outline: none; }
+#treemap .tile rect { transition: opacity .15s ease; }
+#treemap .tile:hover rect, #treemap .tile:focus-visible rect { opacity: .78; }
+#treemap .tile:focus-visible rect { stroke: var(--text-primary); stroke-width: 2px; }
+#treemap text { pointer-events: none; font-family: inherit; }
+.focusline { margin: 8px 0 0; min-height: 1.45em; }
+
+.legend { display: flex; gap: 14px; list-style: none; margin: 9px 0 0; padding: 0; font-size: 12px; color: var(--text-muted); }
+.legend li { display: flex; align-items: center; gap: 5px; }
+.sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.sw-dir { background: var(--tile); } .sw-file { background: var(--tile); opacity: .55; }
+.sw-rest { background: var(--neutral-mark); }
+/* Kind is carried by the glyph, not the fill — one hue means no CVD exposure. */
+.legend .g { font-size: 12px; color: var(--text-muted); width: 10px; text-align: center; }
+
+/* ── Tables (the WCAG-clean twin of every chart on the page) ─────────────── */
+.tbl { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+.tbl th {
+  text-align: left; font-weight: 500; font-size: 11px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--text-muted);
+  padding: 6px 4px; border-bottom: 1px solid var(--gridline);
+}
+.tbl td { padding: 9px 4px; border-bottom: 1px solid var(--gridline); vertical-align: middle; }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tbl tbody tr.tap { cursor: pointer; }
+.tbl tbody tr.tap:hover td { background: var(--ghost); }
+.name-cell { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.name-cell .sw { flex: none; }
+.name-cell span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Container rows ──────────────────────────────────────────────────────── */
+.ctr-tbl td:first-child { max-width: 0; width: 45%; }
+.ctr-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctr-sub { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctr-bar { height: 3px; border-radius: 2px; background: var(--track-ok); margin-top: 5px; overflow: hidden; }
+.ctr-bar i { display: block; height: 100%; background: var(--series-1); border-radius: 2px; transition: width .3s ease; }
+.dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.run { background: var(--status-good); } .dot.stop { background: var(--text-muted); }
+.dot.bad { background: var(--status-critical); }
+tr.is-stopped { opacity: .55; }
+
+.foot { display: flex; justify-content: space-between; align-items: center; padding: 0 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+@media (min-width: 560px) {
+  #treemap { height: 380px; }
+  .hero { font-size: 64px; }
+}

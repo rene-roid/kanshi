@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+<title>kanshi</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='4' fill='%232a78d6'/></svg>">
+</head>
+<body class="viz-root">
+
+<header class="topbar">
+  <h1>kanshi</h1>
+  <div class="topbar-meta">
+    <span id="uptime" class="muted">—</span>
+    <span id="conn" class="conn" title="Live connection status"><i></i><span>connecting</span></span>
+  </div>
+</header>
+
+<main id="app">
+
+  <!-- ───────── CPU: the hero figure, exactly one per view ───────── -->
+  <section class="card" aria-labelledby="cpu-h">
+    <div class="card-head">
+      <h2 id="cpu-h">Processor</h2>
+      <span id="cpu-meta" class="muted small">—</span>
+    </div>
+    <div class="hero-row">
+      <div>
+        <div id="cpu-hero" class="hero">—<span class="hero-unit">%</span></div>
+        <div class="hero-label muted small">utilisation across <span id="cpu-count">—</span> cores</div>
+      </div>
+      <dl class="minitable" id="cpu-aux"></dl>
+    </div>
+    <div class="cores" id="cores" role="img" aria-label="Per-core utilisation"></div>
+  </section>
+
+  <!-- ───────── Memory + filesystem meters ───────── -->
+  <section class="card" aria-labelledby="mem-h">
+    <div class="card-head"><h2 id="mem-h">Memory &amp; volumes</h2></div>
+    <div id="meters" class="meters"></div>
+  </section>
+
+  <!-- ───────── Storage treemap ───────── -->
+  <section class="card" aria-labelledby="stor-h">
+    <div class="card-head">
+      <h2 id="stor-h">Storage map</h2>
+      <button id="rescan" class="btn" type="button">Rescan</button>
+    </div>
+    <div class="rootbar" id="rootbar" role="tablist" aria-label="Storage root"></div>
+    <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
+    <div class="treemap-wrap">
+      <svg id="treemap" role="img" aria-labelledby="stor-h" preserveAspectRatio="none"></svg>
+    </div>
+    <p id="tm-focus" class="focusline muted small" aria-live="polite">Tap a block to drill in.</p>
+    <ul class="legend">
+      <li><span class="g">▸</span>folder</li>
+      <li><span class="g">·</span>file</li>
+      <li><span class="g">⋯</span>aggregated</li>
+    </ul>
+    <table class="tbl" id="stor-tbl">
+      <caption class="visually-hidden">Contents of the selected directory by size</caption>
+      <thead><tr><th scope="col">Name</th><th scope="col" class="num">Size</th><th scope="col" class="num">Share</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="stor-meta" class="muted small"></p>
+  </section>
+
+  <!-- ───────── Containers ───────── -->
+  <section class="card" aria-labelledby="ctr-h">
+    <div class="card-head">
+      <h2 id="ctr-h">Containers</h2>
+      <span id="ctr-meta" class="muted small">—</span>
+    </div>
+    <div class="sortbar" role="group" aria-label="Sort containers">
+      <button class="chip is-on" data-sort="cpu" type="button">CPU</button>
+      <button class="chip" data-sort="mem" type="button">Memory</button>
+      <button class="chip" data-sort="net" type="button">Network</button>
+      <button class="chip" data-sort="name" type="button">Name</button>
+    </div>
+    <table class="tbl ctr-tbl" id="ctr-tbl">
+      <caption class="visually-hidden">Per-container CPU, memory and network</caption>
+      <thead><tr>
+        <th scope="col">Container</th>
+        <th scope="col" class="num">CPU</th>
+        <th scope="col" class="num">Memory</th>
+        <th scope="col" class="num">Net ↓↑</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <footer class="foot muted small">
+    <span id="foot-meta">—</span>
+    <button id="theme" class="btn btn-quiet" type="button" aria-label="Toggle colour theme">Theme</button>
+  </footer>
+</main>
+
+<script src="/static/treemap.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

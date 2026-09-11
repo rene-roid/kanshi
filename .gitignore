@@ -1,0 +1,6 @@
+# Local overrides — .env.example is the tracked template
+.env
+
+# Python
+__pycache__/
+*.py[cod]
