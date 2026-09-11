@@ -117,7 +117,7 @@ body.is-stale { opacity: .55; }          /* hold the last render, never a skelet
 .conn.live i { background: var(--status-good); }
 .conn.down i { background: var(--status-critical); }
 
-main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid; gap: 12px; }
+main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid; gap: 12px; min-width: 0; }
 
 /* ── Cards ───────────────────────────────────────────────────────────────── */
 .card {
@@ -125,6 +125,9 @@ main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid;
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 14px;
+  /* A grid item's automatic minimum size is its content, so without this a
+     single long path inside the card widens the page instead of truncating. */
+  min-width: 0;
 }
 .card-head {
   display: flex; align-items: baseline; justify-content: space-between;
@@ -197,12 +200,16 @@ main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid;
   background: transparent; color: var(--text-muted); cursor: pointer;
 }
 .chip.is-on { background: var(--series-1); border-color: transparent; color: #fff; }
+/* Paths can be arbitrarily long; a wrapping row still can't shrink a single
+   over-wide item, so each chip truncates at the container's width. */
+.rootbar .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Breadcrumb ──────────────────────────────────────────────────────────── */
 .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-bottom: 8px; font-size: 12px; }
 .crumbs button {
   font: inherit; font-size: 12px; background: none; border: 0; padding: 4px 5px;
   color: var(--series-1); cursor: pointer; border-radius: 5px; min-height: 28px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .crumbs button[disabled] { color: var(--text-muted); cursor: default; }
 .crumbs .sep { color: var(--text-muted); }
@@ -215,7 +222,8 @@ main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid;
 #treemap .tile:hover rect, #treemap .tile:focus-visible rect { opacity: .78; }
 #treemap .tile:focus-visible rect { stroke: var(--text-primary); stroke-width: 2px; }
 #treemap text { pointer-events: none; font-family: inherit; }
-.focusline { margin: 8px 0 0; min-height: 1.45em; }
+.focusline { margin: 8px 0 0; min-height: 1.45em; overflow-wrap: anywhere; }
+#stor-meta { overflow-wrap: anywhere; }
 
 .legend { display: flex; gap: 14px; list-style: none; margin: 9px 0 0; padding: 0; font-size: 12px; color: var(--text-muted); }
 .legend li { display: flex; align-items: center; gap: 5px; }
@@ -237,6 +245,7 @@ main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid;
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tbl tbody tr.tap { cursor: pointer; }
 .tbl tbody tr.tap:hover td { background: var(--ghost); }
+#stor-tbl td:first-child, #stor-tbl th:first-child { max-width: 0; width: 60%; }
 .name-cell { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .name-cell .sw { flex: none; }
 .name-cell span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

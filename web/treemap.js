@@ -79,6 +79,27 @@
     return node;
   }
 
+  /* Trim a label until it truly fits its tile. The character estimate below is
+   * only an estimate — proportional type makes "WWW" three times the width of
+   * "iii" — so anything still over budget is measured and cut for real. The
+   * node has to be in the document before getComputedTextLength() means
+   * anything, hence the second pass after every tile is placed. */
+  function fitLabel(entry) {
+    const node = entry.node;
+    if (node.getComputedTextLength() <= entry.room) return;
+    // One proportional guess lands within a character or two; the loop closes
+    // the rest. Both run on a handful of labels, never the whole tree.
+    let chars = Math.max(1, Math.floor(entry.name.length * (entry.room / node.getComputedTextLength())) - 1);
+    node.textContent = entry.prefix + entry.name.slice(0, chars) + "…";
+    while (chars > 1 && node.getComputedTextLength() > entry.room) {
+      chars -= 1;
+      node.textContent = entry.prefix + entry.name.slice(0, chars) + "…";
+    }
+    // Not even one character plus the ellipsis fits: drop the label rather than
+    // let it bleed over the tile edge. The table below still carries the name.
+    if (node.getComputedTextLength() > entry.room) node.textContent = "";
+  }
+
   /* render(svg, children, { width, height, fmt, onSelect, onFocus }) */
   function render(svg, children, opts) {
     const W = opts.width, H = opts.height;
@@ -94,6 +115,7 @@
     }
 
     const placed = squarify(children, 0, 0, W, H);
+    const pending = [];   // labels to measure once they are in the document
 
     for (const cell of placed) {
       const d = cell.item;
@@ -124,11 +146,18 @@
           "font-weight": 600, "letter-spacing": "-.005em",
         });
         const glyph = GLYPH[d.kind] || "";
-        const maxChars = Math.floor((w - 14) / 6.6);
+        const prefix = glyph ? glyph + " " : "";
+        // The glyph rides in the same line box, so it has to come out of the
+        // budget too — otherwise every labelled tile runs two characters long
+        // and the name is sliced by the SVG clip instead of ellipsised. 6.9 is
+        // a deliberately pessimistic advance width: real names carry capitals
+        // and spaces, which run wider than the lowercase average.
+        const maxChars = Math.floor((w - 14) / 6.9) - prefix.length;
         let name = d.name;
         if (name.length > maxChars) name = name.slice(0, Math.max(1, maxChars - 1)) + "…";
-        label.textContent = glyph ? glyph + " " + name : name;
+        label.textContent = prefix + name;
         group.appendChild(label);
+        pending.push({ node: label, prefix: prefix, name: d.name, room: w - 14 });
 
         if (h >= 42) {
           const value = el("text", {
@@ -137,6 +166,7 @@
           });
           value.textContent = opts.fmt(d.size);
           group.appendChild(value);
+          pending.push({ node: value, prefix: "", name: opts.fmt(d.size), room: w - 14 });
         }
       }
 
@@ -150,6 +180,8 @@
       });
       svg.appendChild(group);
     }
+
+    for (const entry of pending) fitLabel(entry);
   }
 
   global.Treemap = { render: render, squarify: squarify };
