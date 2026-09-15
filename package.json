@@ -1,0 +1,35 @@
+{
+  "name": "@your-npm-username/kanshi",
+  "version": "0.1.0",
+  "description": "Launch the Kanshi Docker host dashboard with npx.",
+  "license": "UNLICENSED",
+  "bin": {
+    "kanshi": "bin/kanshi.js"
+  },
+  "files": [
+    "app",
+    "web",
+    "bin",
+    "Dockerfile",
+    "docker-compose.yml",
+    "requirements.txt",
+    "README.md",
+    ".env.example"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "pack:check": "npm pack --dry-run",
+    "test": "node --check bin/kanshi.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "docker",
+    "dashboard",
+    "monitoring",
+    "tailscale"
+  ]
+}

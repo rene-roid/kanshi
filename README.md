@@ -8,6 +8,49 @@ Reachable from any device on the tailnet:
 
     http://homeserver.tail7ec1d9.ts.net:8100
 
+## Install with npx
+
+`npx` downloads and runs an npm package; it does not upload a project. This
+repository includes a small npm launcher which starts the included Docker
+Compose app, so Docker (with the Compose v2 plugin) is still required.
+
+Before publishing, replace `your-npm-username` in `package.json` and
+`bin/kanshi.js` with the npm account or organization that will own the package.
+Then, from a directory containing your `.env` file:
+
+```sh
+npx @your-npm-username/kanshi
+```
+
+The command is equivalent to `docker compose up -d --build`. It reads a `.env`
+file from the directory where you run it, so first copy the template and set a
+safe `KANSHI_HOST` for the host being monitored:
+
+```sh
+cp .env.example .env
+# edit .env, then:
+npx @your-npm-username/kanshi
+```
+
+Pass Docker Compose commands after the package name, for example:
+
+```sh
+npx @your-npm-username/kanshi logs -f
+npx @your-npm-username/kanshi down
+```
+
+To publish the launcher, use:
+
+```sh
+npm login
+npm run test
+npm run pack:check
+npm publish
+```
+
+The scoped package is configured to publish publicly. Use a unique package
+name you control; `npm publish --dry-run` is a final check that uploads nothing.
+
 ## Run it
 
 ```sh
