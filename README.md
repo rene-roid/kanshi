@@ -4,9 +4,9 @@ A one-page, mobile-first glance at this homeserver: live CPU and RAM, a
 Filelight-style storage treemap, and `docker stats` for every container — no
 historical storage, no alerting, no external services.
 
-Reachable from any device on the tailnet:
+By default it is reachable only from the local machine:
 
-    http://homeserver.tail7ec1d9.ts.net:8100
+    http://localhost:8100
 
 ## Install with npx
 

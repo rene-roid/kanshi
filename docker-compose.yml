@@ -10,10 +10,9 @@ services:
     network_mode: host
 
     environment:
-      # Bind to the Tailscale IP only — not the LAN, not the public interface.
-      # Reachable at http://homeserver.tail7ec1d9.ts.net:8100 from any device on
-      # the tailnet. Set to 0.0.0.0 to also expose it on the LAN.
-      KANSHI_HOST: "${KANSHI_HOST:-100.73.243.14}"
+      # Localhost is safe for a package install. Set this to a Tailscale IP to
+      # share it on a tailnet, or 0.0.0.0 only behind an authenticated proxy.
+      KANSHI_HOST: "${KANSHI_HOST:-127.0.0.1}"
       KANSHI_PORT: "${KANSHI_PORT:-8100}"
 
       # Live poll cadence. Each tick is one /containers/json plus one /stats per

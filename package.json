@@ -1,6 +1,6 @@
 {
   "name": "@yuuki824/kanshi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Launch the Kanshi Docker host dashboard with npx.",
   "license": "UNLICENSED",
   "bin": {
