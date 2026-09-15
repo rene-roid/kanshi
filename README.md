@@ -14,12 +14,10 @@ Reachable from any device on the tailnet:
 repository includes a small npm launcher which starts the included Docker
 Compose app, so Docker (with the Compose v2 plugin) is still required.
 
-Before publishing, replace `your-npm-username` in `package.json` and
-`bin/kanshi.js` with the npm account or organization that will own the package.
-Then, from a directory containing your `.env` file:
+From a directory containing your `.env` file:
 
 ```sh
-npx @your-npm-username/kanshi
+npx @yuuki824/kanshi
 ```
 
 The command is equivalent to `docker compose up -d --build`. It reads a `.env`
@@ -29,14 +27,14 @@ safe `KANSHI_HOST` for the host being monitored:
 ```sh
 cp .env.example .env
 # edit .env, then:
-npx @your-npm-username/kanshi
+npx @yuuki824/kanshi
 ```
 
 Pass Docker Compose commands after the package name, for example:
 
 ```sh
-npx @your-npm-username/kanshi logs -f
-npx @your-npm-username/kanshi down
+npx @yuuki824/kanshi logs -f
+npx @yuuki824/kanshi down
 ```
 
 To publish the launcher, use:

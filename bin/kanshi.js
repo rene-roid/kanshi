@@ -10,13 +10,13 @@ const callerDirectory = process.cwd();
 const args = process.argv.slice(2);
 
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`Usage: npx @your-npm-username/kanshi [docker-compose arguments]
+  console.log(`Usage: npx @yuuki824/kanshi [docker-compose arguments]
 
 Starts Kanshi with Docker Compose. A .env file in the current directory is used
 when present. Common commands:
-  npx @your-npm-username/kanshi
-  npx @your-npm-username/kanshi logs -f
-  npx @your-npm-username/kanshi down
+  npx @yuuki824/kanshi
+  npx @yuuki824/kanshi logs -f
+  npx @yuuki824/kanshi down
 
 Docker and the Docker Compose v2 plugin are required.`);
   process.exit(0);
