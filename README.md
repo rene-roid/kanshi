@@ -14,27 +14,68 @@ By default it is reachable only from the local machine:
 repository includes a small npm launcher which starts the included Docker
 Compose app, so Docker (with the Compose v2 plugin) is still required.
 
-From a directory containing your `.env` file:
+From any directory, run:
 
 ```sh
 npx @yuuki824/kanshi
 ```
 
-The command is equivalent to `docker compose up -d --build`. It reads a `.env`
-file from the directory where you run it, so first copy the template and set a
-safe `KANSHI_HOST` for the host being monitored:
+The first run downloads the package, builds the Docker image, and starts a
+container named `kanshi`. Open <http://localhost:8100> once it says the
+container started. It may take a minute for the initial health check to pass.
+
+The command is equivalent to `docker compose up -d --build`. To run without
+the confirmation prompt:
 
 ```sh
-cp .env.example .env
-# edit .env, then:
-npx @yuuki824/kanshi
+npx --yes @yuuki824/kanshi
 ```
 
-Pass Docker Compose commands after the package name, for example:
+### Manage the container
+
+```sh
+# Stop it without removing it.
+docker stop kanshi
+
+# Start the stopped container again.
+docker start kanshi
+
+# Follow application logs.
+docker logs -f kanshi
+
+# Remove the current container, for example before installing an update.
+docker rm -f kanshi
+
+# Download the newest package version and start it again.
+npx @yuuki824/kanshi@latest
+```
+
+You can also pass Docker Compose commands after the package name:
 
 ```sh
 npx @yuuki824/kanshi logs -f
 npx @yuuki824/kanshi down
+```
+
+### Network access
+
+Kanshi listens on `127.0.0.1:8100` by default, so it is private to the host.
+To share it over Tailscale, use the machine's Tailscale IP:
+
+```sh
+KANSHI_HOST="$(tailscale ip -4)" npx @yuuki824/kanshi
+```
+
+Do not use `KANSHI_HOST=0.0.0.0` unless the machine is protected by an
+authenticated reverse proxy: the dashboard can read Docker information.
+
+### Troubleshooting
+
+Check whether the container is running and inspect a restart or startup error:
+
+```sh
+docker ps --filter name=kanshi
+docker logs --tail=100 kanshi
 ```
 
 To publish the launcher, use:
@@ -97,17 +138,6 @@ hardlinked files are counted once.
 **Unreadable directories are reported, not hidden.** If the walk cannot enter a
 directory it is counted and the storage card says so — a silently truncated tree
 that under-reports by 300 GB is worse than an obviously incomplete one.
-
-## Access
-
-The port is bound to the **Tailscale interface only** (`KANSHI_HOST`), so the
-dashboard is not exposed on the LAN or the public interface and needs no auth
-layer of its own. Set `KANSHI_HOST=0.0.0.0` to expose it on the LAN — but note
-that anything that can reach this app can reach the Docker socket through it, so
-add an auth proxy first if you do.
-
-If Tailscale is down when Docker starts, the bind fails and `restart:
-unless-stopped` retries until `tailscale0` is back.
 
 ## Permissions
 
