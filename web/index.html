@@ -51,6 +51,12 @@
       <button id="rescan" class="btn" type="button">Rescan</button>
     </div>
     <div class="rootbar" id="rootbar" role="tablist" aria-label="Storage root"></div>
+    <form class="pinform" id="pinform" hidden>
+      <input id="pinform-input" type="text" placeholder="/mnt/data/media/movies" autocomplete="off" spellcheck="false">
+      <button class="btn" type="submit">Go</button>
+      <button class="btn btn-quiet" type="button" id="pinform-cancel">Cancel</button>
+      <span class="pinform-err" id="pinform-err" role="alert"></span>
+    </form>
     <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
     <div class="treemap-wrap">
       <svg id="treemap" role="img" aria-labelledby="stor-h" preserveAspectRatio="none"></svg>

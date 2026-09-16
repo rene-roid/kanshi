@@ -42,7 +42,7 @@ class Config:
     docker_socket: str = field(default_factory=lambda: os.environ.get("KANSHI_DOCKER_SOCKET", "/var/run/docker.sock"))
 
     # Storage walk. Roots are "label=path" or just "path".
-    storage_roots: list[str] = field(default_factory=lambda: _list("KANSHI_STORAGE_ROOTS", "/mnt/data=/mnt/data,/=/hostfs"))
+    storage_roots: list[str] = field(default_factory=lambda: _list("KANSHI_STORAGE_ROOTS", "/=/hostfs,/mnt/data=/mnt/data"))
     storage_interval: float = field(default_factory=lambda: _float("KANSHI_STORAGE_INTERVAL", 1800.0))
     # Absolute container-side paths to skip entirely. Their bytes vanish from
     # the totals, so only exclude things you truly don't want counted.
