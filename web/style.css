@@ -193,6 +193,9 @@ main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid;
 .btn[disabled] { opacity: .5; cursor: default; }
 .btn-quiet { border-color: transparent; background: transparent; }
 
+.scan-progress { margin-bottom: 10px; }
+.scan-progress p { margin: 5px 0 0; }
+
 .rootbar, .sortbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
 .chip {
   font: inherit; font-size: 12px; padding: 5px 11px; min-height: 30px;

@@ -7,12 +7,13 @@
     "kanshi": "bin/kanshi.js"
   },
   "files": [
-    "app",
+    "main.go",
+    "go.mod",
+    "internal",
     "web",
     "bin",
     "Dockerfile",
     "docker-compose.yml",
-    "requirements.txt",
     "README.md",
     ".env.example"
   ],
@@ -28,6 +29,7 @@
   },
   "keywords": [
     "docker",
+    "go",
     "dashboard",
     "monitoring",
     "tailscale"

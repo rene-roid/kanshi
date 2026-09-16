@@ -318,7 +318,30 @@
     $("#stor-meta").textContent = "";
   }
 
+  // There is nothing to compare against on the very first walk ever — no
+  // previous byte totals — so the server omits `progress` rather than
+  // shipping a meaningless 0%. The bar only appears once there is a real
+  // percentage to show.
+  function renderScanProgress() {
+    const bar = $("#scan-progress");
+    const p = storage && storage.progress;
+    if (!storage || !storage.scanning || !p) { bar.hidden = true; return; }
+    bar.hidden = false;
+    $("#scan-progress-fill").style.width = Math.min(100, p.percent) + "%";
+    $("#scan-progress-label").textContent =
+      "Scanning " + p.root + "… " + p.percent.toFixed(0) + "% · " + bytes(p.bytes_done) + " of " + bytes(p.bytes_total);
+  }
+
+  function updateRescanButton() {
+    const btn = $("#rescan");
+    const scanning = !!(storage && storage.scanning);
+    btn.disabled = scanning;
+    btn.textContent = scanning ? "Scanning…" : "Rescan";
+  }
+
   function drawStorage() {
+    renderScanProgress();
+    updateRescanButton();
     if (!storage || !storage.roots || !storage.roots.length) {
       emptyStorage(storage && storage.error
         ? "Scan failed: " + storage.error
@@ -374,10 +397,24 @@
       ago(storage.scanned_at) + (storage.scanning ? " · rescanning…" : "") + warn;
   }
 
+  // While a walk is running the server updates its progress counters live, so
+  // poll every second instead of the normal 60s cadence — cheap, since /api/storage
+  // just reads counters rather than repeating any filesystem work. The chain
+  // stops itself the moment a poll comes back with scanning: false.
+  let scanPollTimer = null;
+  function scheduleScanPoll() {
+    clearTimeout(scanPollTimer);
+    scanPollTimer = setTimeout(async () => {
+      await loadStorage();
+      if (storage && storage.scanning) scheduleScanPoll();
+    }, 1000);
+  }
+
   async function loadStorage() {
     try {
       const res = await fetch("/api/storage");
       storage = await res.json();
+      if (storage.scanning) scheduleScanPoll();
       if (!storage.roots || !storage.roots.length) { drawStorage(); return; }
       if (rootIndex >= storage.roots.length) rootIndex = 0;
       // Re-anchor the current view onto the fresh tree so a background rescan
@@ -395,11 +432,13 @@
     } catch (err) { /* keep the previous render */ }
   }
 
+  // The rescan endpoint now starts the walk in the background and returns
+  // immediately (a full walk can run well over a minute), so the button just
+  // kicks it off and lets the 1s poll loop above carry the live percentage —
+  // it does not wait for the walk to finish.
   $("#rescan").addEventListener("click", async () => {
-    const btn = $("#rescan");
-    btn.disabled = true; btn.textContent = "Scanning…";
-    try { await fetch("/api/storage/rescan", { method: "POST" }); await loadStorage(); }
-    finally { btn.disabled = false; btn.textContent = "Rescan"; }
+    try { await fetch("/api/storage/rescan", { method: "POST" }); } catch (err) { /* next poll retries */ }
+    await loadStorage();
   });
 
   let resizeTimer;
