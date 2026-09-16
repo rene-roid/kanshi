@@ -30,6 +30,13 @@ services:
       KANSHI_STORAGE_EXCLUDE: "${KANSHI_STORAGE_EXCLUDE:-}"
       KANSHI_TREE_DEPTH: "${KANSHI_TREE_DEPTH:-4}"
 
+      # Give the GC a budget below mem_limit so a walk on an unusually large
+      # filesystem degrades into more collection rather than an OOM kill.
+      GOMEMLIMIT: "80MiB"
+      # Two Ps is plenty for a 5s poll loop and one walk, and it keeps the Go
+      # scheduler from spreading across all four cores of a busy box.
+      GOMAXPROCS: "2"
+
     volumes:
       # Read-only on the socket is a mount flag, not an API restriction — it is
       # the Tailscale-only bind above that keeps this out of reach.
@@ -49,9 +56,12 @@ services:
       - no-new-privileges:true
 
     # Stays out of the way of the other ~28 containers on this 4-core box.
-    # Steady state is ~1% of one core; the ceiling is headroom for the walk.
+    # Steady state is ~0.03% of one core; the ceiling is headroom for the walk.
     cpus: "1.0"
-    mem_limit: 256m
+    # Measured peak during a full walk of a 2 TB host is ~20 MiB of heap, and
+    # ~8 MiB at rest. The rest of this is reclaimable page cache the walk pulls
+    # in, which the kernel drops again the moment anything else wants it.
+    mem_limit: 96m
 
     logging:
       driver: json-file

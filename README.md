@@ -7,8 +7,8 @@
 Live CPU and RAM, a Filelight-style storage treemap, and `docker stats` for
 every container — no historical storage, no alerting, no external services.
 
-[![Python](https://img.shields.io/badge/Python-3.12-3776ab?logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Go](https://img.shields.io/badge/Go-1.25-00add8?logo=go&logoColor=white)](https://go.dev/)
+[![Image](https://img.shields.io/badge/image-9.6MB%20scratch-0b7285)](https://hub.docker.com/_/scratch)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![npm](https://img.shields.io/badge/npx-%40yuuki824%2Fkanshi-cb3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/@yuuki824/kanshi)
 
@@ -47,17 +47,19 @@ By default it is reachable only from the local machine:
 - 🐳 **Containers** — per-container CPU%, memory, network rate and health straight from the Docker Engine API
 - ⚡ **One SSE connection** — the server pushes every tick over `/api/stream`; nothing polls, nothing needs a manual reload
 - 😴 **Idles to near-zero** — the poller and the Docker socket both go quiet after `KANSHI_IDLE_TIMEOUT` with nobody watching
+- 🪶 **9.6 MB image, ~8 MB resident** — one static Go binary on `scratch`: no interpreter, no shell, no package manager
 - 🔒 **Tailscale-friendly** — binds to `127.0.0.1` by default; point it at a Tailscale IP to share it on a tailnet instead of the open LAN
 
 ## Tech Stack
 
 | Layer | Choice |
 |---|---|
-| Backend | Python 3.12, FastAPI + Uvicorn, `psutil` |
+| Backend | Go 1.25, standard library only — zero third-party dependencies |
+| Host metrics | `/proc` and `/sys` parsed directly; `statfs(2)` for volumes |
 | Live updates | Server-Sent Events (`/api/stream`) |
-| Frontend | Vanilla JS, hand-rolled SVG treemap — no build step |
+| Frontend | Vanilla JS, hand-rolled SVG treemap — no build step, embedded in the binary |
 | Container metrics | Docker Engine API (one-shot stats, not the streaming daemon default) |
-| Packaging | Docker Compose, published as an `npx` launcher |
+| Packaging | `scratch` image via multi-stage build, Docker Compose, `npx` launcher |
 
 ## Install with npx
 
@@ -154,9 +156,9 @@ conservative default; the file documents each one.
 
 | Card | Source | Refresh |
 |---|---|---|
-| Processor — hero %, per-core bars, load, temp, host net/disk throughput | `psutil` over `/proc` | every `KANSHI_POLL_INTERVAL` (5s) |
-| Memory & volumes — RAM, swap, one meter per storage root | `psutil` + `statvfs` | same tick |
-| Storage map — squarified treemap, tap to drill, table twin below | cached `os.scandir` walk | every `KANSHI_STORAGE_INTERVAL` (30m), or the Rescan button |
+| Processor — hero %, per-core bars, load, temp, host net/disk throughput | `/proc/stat`, `/proc/net/dev`, `/proc/diskstats`, `/sys` hwmon | every `KANSHI_POLL_INTERVAL` (5s) |
+| Memory & volumes — RAM, swap, one meter per storage root | `/proc/meminfo` + `statfs(2)` | same tick |
+| Storage map — squarified treemap, tap to drill, table twin below | cached `getdents`+`lstat` walk | every `KANSHI_STORAGE_INTERVAL` (30m), or the Rescan button |
 | Containers — CPU%, memory, network rates, health | Docker Engine API | same tick |
 
 The browser holds **one SSE connection** (`/api/stream`) and the server pushes
@@ -183,8 +185,11 @@ fully traversed and counted; their bytes roll up into the nearest kept ancestor.
 Sizes come from `st_blocks` (so they match `du`, not apparent size) and
 hardlinked files are counted once.
 
-**The walk runs at `nice 10`** in a worker thread. A full pass over `/` takes
-~47s, and the live cards keep their exact 5s cadence throughout.
+**The walk runs at `nice 10`** on a locked, dedicated OS thread — Linux applies
+`setpriority(PRIO_PROCESS)` per thread, and the runtime retires that thread when
+the walk ends rather than handing a niced thread back to the poller. A full pass
+over `/` takes ~76s on a cold cache, and the live cards keep their exact 5s
+cadence throughout.
 
 **Unreadable directories are reported, not hidden.** If the walk cannot enter a
 directory it is counted and the storage card says so — a silently truncated tree
@@ -199,12 +204,29 @@ filesystem by ~330 GB. The rootfs is read-only and every host mount is `:ro`.
 
 ## About kanshi's own memory number
 
-The dashboard will show kanshi using far more memory than you'd expect for a
-10 MB Python process. That figure is mostly **reclaimable kernel dentry cache**
-charged to its cgroup — an unavoidable side effect of `stat`-ing ~150k files
-during a walk. Actual anonymous memory is ~27 MB; `mem_limit` acts as a ceiling
-on the cache and the kernel reclaims it under pressure. The number matches what
-`docker stats` reports for any container, which is the point.
+The dashboard will show kanshi using far more memory than the process actually
+has. That figure is mostly **reclaimable kernel dentry cache** charged to its
+cgroup — an unavoidable side effect of `lstat`-ing ~150k files during a walk.
+Measured anonymous memory is **~8 MB at rest and ~20 MB at the peak of a full
+walk**; `mem_limit` acts as a ceiling on the cache and the kernel reclaims it
+under pressure. `GOMEMLIMIT` sits below `mem_limit` so an unusually large
+filesystem makes the collector work harder instead of getting the container
+OOM-killed. The number matches what `docker stats` reports for any container,
+which is the point.
+
+## Building
+
+The only build dependency is Docker; the image compiles the binary itself.
+
+```sh
+docker compose up -d --build
+```
+
+With a local Go toolchain (1.22+), `go build .` and `go vet ./...` work from the
+repository root with no module downloads — there are no third-party imports. The
+frontend is embedded with `//go:embed`, so a rebuild is needed after editing
+anything under `web/`; set `KANSHI_WEB_DIR=./web` to serve it from disk instead
+while iterating.
 
 ## Tuning
 

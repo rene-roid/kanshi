@@ -1,27 +1,32 @@
-FROM python:3.12-slim
+# Build stage. The module has no third-party dependencies, so there is nothing
+# to download and nothing to vendor — go.mod is copied on its own only so the
+# layer cache survives edits to the source.
+FROM golang:1.25-alpine AS build
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-WORKDIR /opt/kanshi
-
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY app ./app
+WORKDIR /src
+COPY go.mod ./
+COPY main.go ./
+COPY internal ./internal
 COPY web ./web
+
+# CGO off because nothing here needs libc: /proc is read as plain files and the
+# Docker socket is a plain unix socket. That is what makes a scratch image
+# possible at all.
+ENV CGO_ENABLED=0
+RUN go vet ./... && \
+    go build -trimpath -ldflags="-s -w" -o /kanshi .
+
+# Runtime stage. The web assets are embedded in the binary, so the image is one
+# static file and nothing else — no shell, no package manager, no CVE surface.
+FROM scratch
+
+COPY --from=build /kanshi /kanshi
 
 EXPOSE 8100
 
-# Probe the address uvicorn actually bound to — with network_mode: host that
-# may be the Tailscale IP rather than loopback.
-HEALTHCHECK --interval=60s --timeout=5s --start-period=15s --retries=3 \
-  CMD python -c "import os,urllib.request,sys; \
-h=os.environ.get('KANSHI_HOST','127.0.0.1'); h='127.0.0.1' if h=='0.0.0.0' else h; \
-sys.exit(0 if urllib.request.urlopen('http://%s:%s/healthz' % (h, os.environ.get('KANSHI_PORT','8100')), timeout=4).status==200 else 1)"
+# The probe is the binary itself: a scratch image has no curl to call, and this
+# way it reads KANSHI_HOST/KANSHI_PORT from the same code that binds them.
+HEALTHCHECK --interval=60s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/kanshi", "-healthcheck"]
 
-CMD ["sh", "-c", "exec python -m uvicorn app.main:app \
-  --host ${KANSHI_HOST:-0.0.0.0} --port ${KANSHI_PORT:-8100} \
-  --no-access-log --timeout-keep-alive 65"]
+ENTRYPOINT ["/kanshi"]
