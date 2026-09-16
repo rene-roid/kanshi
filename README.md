@@ -1,12 +1,63 @@
+<div align="center">
+
 # kanshi
 
-A one-page, mobile-first glance at this homeserver: live CPU and RAM, a
-Filelight-style storage treemap, and `docker stats` for every container — no
-historical storage, no alerting, no external services.
+**A one-page, mobile-first glance at this homeserver.**
+
+Live CPU and RAM, a Filelight-style storage treemap, and `docker stats` for
+every container — no historical storage, no alerting, no external services.
+
+[![Python](https://img.shields.io/badge/Python-3.12-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![npm](https://img.shields.io/badge/npx-%40yuuki824%2Fkanshi-cb3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/@yuuki824/kanshi)
+
+</div>
+
+---
+
+## Screenshots
+
+<table>
+<tr>
+<td width="60%">
+
+**Vitals & storage** — live CPU/RAM meters and the storage treemap
+<img src="docs/screenshots/dashboard-vitals.png" alt="Processor, memory and storage map cards" />
+
+</td>
+<td width="40%">
+
+**Mobile** — the same cards, stacked for a phone screen
+<img src="docs/screenshots/dashboard-mobile.png" alt="Dashboard on a mobile viewport" />
+
+</td>
+</tr>
+</table>
 
 By default it is reachable only from the local machine:
 
     http://localhost:8100
+
+## Features
+
+- 📊 **Processor** — hero utilisation %, per-core bars, load average, temperature, host net/disk throughput
+- 🧠 **Memory & volumes** — RAM, swap, and one meter per storage root
+- 🗺 **Storage map** — squarified treemap you can tap to drill into, with a table twin below; depth-bounded so it stays fast on large filesystems
+- 🐳 **Containers** — per-container CPU%, memory, network rate and health straight from the Docker Engine API
+- ⚡ **One SSE connection** — the server pushes every tick over `/api/stream`; nothing polls, nothing needs a manual reload
+- 😴 **Idles to near-zero** — the poller and the Docker socket both go quiet after `KANSHI_IDLE_TIMEOUT` with nobody watching
+- 🔒 **Tailscale-friendly** — binds to `127.0.0.1` by default; point it at a Tailscale IP to share it on a tailnet instead of the open LAN
+
+## Tech Stack
+
+| Layer | Choice |
+|---|---|
+| Backend | Python 3.12, FastAPI + Uvicorn, `psutil` |
+| Live updates | Server-Sent Events (`/api/stream`) |
+| Frontend | Vanilla JS, hand-rolled SVG treemap — no build step |
+| Container metrics | Docker Engine API (one-shot stats, not the streaming daemon default) |
+| Packaging | Docker Compose, published as an `npx` launcher |
 
 ## Install with npx
 
@@ -99,7 +150,7 @@ docker compose up -d --build
 Copy `.env.example` to `.env` to override anything. Every setting has a
 conservative default; the file documents each one.
 
-## What it shows
+## API
 
 | Card | Source | Refresh |
 |---|---|---|
