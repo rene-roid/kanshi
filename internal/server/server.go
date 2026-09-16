@@ -226,15 +226,17 @@ func (s *Server) handleContainers(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleStorage(w http.ResponseWriter, _ *http.Request) {
 	snap := s.storage.Snapshot()
 	// The very first request arrives before the background loop has finished
-	// its opening walk; block on one rather than returning an empty tree.
+	// its opening walk. Kick one off and return immediately rather than
+	// blocking the request for the walk's full length — the browser polls
+	// this same endpoint and renders the live percentage as it comes in.
 	if snap.ScannedAt == nil && !snap.Scanning {
-		snap = s.storage.Scan(s.base, true)
+		snap = s.storage.ScanAsync(s.base, true)
 	}
 	writeJSON(w, snap)
 }
 
 func (s *Server) handleRescan(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, s.storage.Scan(s.base, false))
+	writeJSON(w, s.storage.ScanAsync(s.base, false))
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {

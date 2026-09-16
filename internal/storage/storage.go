@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -44,11 +45,23 @@ type Node struct {
 
 // Snapshot is what /api/storage returns and what the treemap renders from.
 type Snapshot struct {
-	Roots     []*Node  `json:"roots"`
-	ScannedAt *float64 `json:"scanned_at"`
-	Duration  *float64 `json:"duration"`
-	Scanning  bool     `json:"scanning"`
-	Error     *string  `json:"error"`
+	Roots     []*Node   `json:"roots"`
+	ScannedAt *float64  `json:"scanned_at"`
+	Duration  *float64  `json:"duration"`
+	Scanning  bool      `json:"scanning"`
+	Progress  *Progress `json:"progress,omitempty"`
+	Error     *string   `json:"error"`
+}
+
+// Progress is a live estimate of how far the in-flight walk has gotten,
+// measured against the byte totals from the previous completed scan. There is
+// nothing to compare against on the very first walk ever, so Progress is
+// omitted rather than shipping a meaningless 0%.
+type Progress struct {
+	Root       string  `json:"root"`
+	Percent    float64 `json:"percent"`
+	BytesDone  int64   `json:"bytes_done"`
+	BytesTotal int64   `json:"bytes_total"`
 }
 
 /* ── scanner ────────────────────────────────────────────────────────────── */
@@ -58,13 +71,21 @@ type Snapshot struct {
 type Scanner struct {
 	cfg config.Config
 
-	mu    sync.RWMutex
-	state Snapshot
+	mu          sync.RWMutex
+	state       Snapshot
+	currentRoot string // label of the root the in-flight walk is on
 
-	// scanning serialises walks. A second request while one is in flight gets
+	// progressDone and progressTotal are updated far more often than state (once
+	// per file, not once per scan), so they are plain atomics rather than
+	// going through mu — a walk of a few hundred thousand files would
+	// otherwise contend the same lock the SSE poller and every REST handler
+	// read from.
+	progressDone  atomic.Int64
+	progressTotal atomic.Int64
+
+	// scanMu serialises walks. A second request while one is in flight gets
 	// the current snapshot rather than queueing a duplicate walk.
 	scanMu   sync.Mutex
-	inFlight bool
 	lastScan time.Time
 }
 
@@ -72,26 +93,57 @@ func New(cfg config.Config) *Scanner {
 	return &Scanner{cfg: cfg, state: Snapshot{Roots: []*Node{}}}
 }
 
-// Snapshot returns the cached tree. The returned nodes are never mutated after
-// publication, so callers can marshal them without holding the lock.
+// Snapshot returns the cached tree, plus a live progress estimate while a
+// walk is running. The returned nodes are never mutated after publication, so
+// callers can marshal them without holding the lock.
 func (s *Scanner) Snapshot() Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.state
+	out := s.state
+	if out.Scanning {
+		if total := s.progressTotal.Load(); total > 0 {
+			done := s.progressDone.Load()
+			pct := round1(min(100, float64(done)/float64(total)*100))
+			out.Progress = &Progress{Root: s.currentRoot, Percent: pct, BytesDone: done, BytesTotal: total}
+		}
+	}
+	return out
 }
 
-// Scan rebuilds the tree. Rate-limited unless force is set by the timer.
-func (s *Scanner) Scan(ctx context.Context, force bool) Snapshot {
+// previousTotal sums the byte sizes from the last completed scan, the
+// baseline a new walk's progress is measured against. Zero on the very first
+// scan, when there is nothing yet to compare to.
+func (s *Scanner) previousTotal() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var total int64
+	for _, r := range s.state.Roots {
+		total += r.Size
+	}
+	return total
+}
+
+// beginScan applies the rate limit and flips Scanning on before returning, so
+// a caller that immediately reads Snapshot() sees the walk has started even
+// though the walk itself hasn't produced anything yet. It reports whether a
+// scan was actually started; when it was, the caller must arrange for
+// runScan to be called exactly once to release scanMu.
+func (s *Scanner) beginScan(force bool) bool {
 	if !s.scanMu.TryLock() {
-		return s.Snapshot()
+		return false
 	}
-	defer s.scanMu.Unlock()
-
 	if !force && !s.lastScan.IsZero() && time.Since(s.lastScan) < s.cfg.StorageMinRescan {
-		return s.Snapshot()
+		s.scanMu.Unlock()
+		return false
 	}
-
+	s.progressTotal.Store(s.previousTotal())
+	s.progressDone.Store(0)
 	s.setScanning(true)
+	return true
+}
+
+func (s *Scanner) runScan(ctx context.Context) Snapshot {
+	defer s.scanMu.Unlock()
 	started := time.Now()
 
 	roots, err := s.walkAll(ctx)
@@ -114,9 +166,36 @@ func (s *Scanner) Scan(ctx context.Context, force bool) Snapshot {
 	return out
 }
 
+// Scan rebuilds the tree, blocking until the walk finishes. Rate-limited
+// unless force is set by the timer.
+func (s *Scanner) Scan(ctx context.Context, force bool) Snapshot {
+	if !s.beginScan(force) {
+		return s.Snapshot()
+	}
+	return s.runScan(ctx)
+}
+
+// ScanAsync starts a rescan in the background and returns immediately with
+// Scanning already true, so a REST handler can hand the browser something to
+// poll instead of blocking the request for the length of the walk (on this
+// host, well over a minute).
+func (s *Scanner) ScanAsync(ctx context.Context, force bool) Snapshot {
+	if !s.beginScan(force) {
+		return s.Snapshot()
+	}
+	go s.runScan(ctx)
+	return s.Snapshot()
+}
+
 func (s *Scanner) setScanning(v bool) {
 	s.mu.Lock()
 	s.state.Scanning = v
+	s.mu.Unlock()
+}
+
+func (s *Scanner) setCurrentRoot(label string) {
+	s.mu.Lock()
+	s.currentRoot = label
 	s.mu.Unlock()
 }
 
@@ -170,6 +249,7 @@ func (s *Scanner) walkRoots(ctx context.Context) ([]*Node, error) {
 		if info, err := os.Stat(root.Path); err != nil || !info.IsDir() {
 			continue
 		}
+		s.setCurrentRoot(root.Label)
 		started := time.Now()
 		w, err := s.walk(ctx, root.Path)
 		if err != nil {
@@ -325,6 +405,10 @@ func (s *Scanner) walk(ctx context.Context, rootPath string) (*walkResult, error
 					} else {
 						node.deep += size
 					}
+					// Every byte is counted here exactly once regardless of
+					// depth, the same set the previous scan's cached totals
+					// cover — so this sum lines up with progressTotal.
+					s.progressDone.Add(size)
 				}
 			}
 			if err != nil || len(entries) == 0 {
@@ -491,6 +575,10 @@ func baseName(path string) string {
 		}
 	}
 	return path
+}
+
+func round1(v float64) float64 {
+	return float64(int64(v*10+0.5)) / 10
 }
 
 func round2(v float64) float64 {
