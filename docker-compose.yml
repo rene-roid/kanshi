@@ -23,7 +23,7 @@ services:
       KANSHI_IDLE_TIMEOUT: "${KANSHI_IDLE_TIMEOUT:-30}"
 
       # Storage walk: label=path pairs. Cached, never recomputed per refresh.
-      KANSHI_STORAGE_ROOTS: "${KANSHI_STORAGE_ROOTS:-/mnt/data=/mnt/data,/=/hostfs}"
+      KANSHI_STORAGE_ROOTS: "${KANSHI_STORAGE_ROOTS:-/=/hostfs,/mnt/data=/mnt/data}"
       KANSHI_STORAGE_INTERVAL: "${KANSHI_STORAGE_INTERVAL:-1800}"
       # Container-side paths to skip. /hostfs/var/lib/docker is ~48 GB across
       # ~100k overlay2 files and dominates the walk time — uncomment to trim it.

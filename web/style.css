@@ -204,6 +204,30 @@ main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid;
    over-wide item, so each chip truncates at the container's width. */
 .rootbar .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Pinned custom paths: a chip made of two buttons (jump, remove) rather than
+   one, so the base .chip padding has to move onto the inner buttons. */
+.chip.pin { display: inline-flex; align-items: center; gap: 0; padding: 0; max-width: 100%; }
+.chip.pin .pin-go {
+  font: inherit; font-size: 12px; padding: 5px 4px 5px 11px; border: 0;
+  background: transparent; color: var(--text-muted); cursor: pointer;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chip.pin .pin-x {
+  font: inherit; font-size: 13px; line-height: 1; padding: 5px 10px 5px 4px;
+  border: 0; background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.chip.pin .pin-x:hover { color: var(--status-critical); }
+.chip.pin-add { cursor: pointer; }
+
+.pinform { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -2px 0 10px; }
+.pinform[hidden] { display: none; }
+.pinform input {
+  font: inherit; font-size: 13px; flex: 1 1 220px; min-width: 0;
+  padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface-1); color: var(--text-primary);
+}
+.pinform-err { flex: 1 0 100%; font-size: 12px; color: var(--status-critical); }
+
 /* ── Breadcrumb ──────────────────────────────────────────────────────────── */
 .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-bottom: 8px; font-size: 12px; }
 .crumbs button {

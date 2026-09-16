@@ -1,9 +1,12 @@
-/* Squarified treemap, ~120 lines of SVG. No charting library: the whole point
- * of this app is to have no external dependencies.
+/* Full-width stacked bars, ~90 lines of SVG. No charting library: the whole
+ * point of this app is to have no external dependencies.
  *
- * Bruls/Huizing/van Wijk squarified layout — greedily fills rows along the
- * short side, keeping each tile as close to square as it can, so tiles stay
- * tappable on a phone instead of degenerating into slivers. */
+ * Each item is a bar spanning the full width, stacked top to bottom, height
+ * proportional to its byte share. A squarified 2D treemap packs a dominant
+ * item into a near-square block and leaves the rest a sliver whose width is
+ * fixed by that item's share — no matter how tall the section grows, a 2%
+ * item stays too narrow for its name. Giving every bar the full width means
+ * only height is ever scarce, and the section can grow to make room for it. */
 (function (global) {
   "use strict";
 
@@ -12,63 +15,18 @@
   const RADIUS = 3;
   const GLYPH = { dir: "▸", file: "·", rest: "⋯" };
 
-  function worstRatio(row, rowSum, shortSide, scale) {
-    if (!row.length) return Infinity;
-    const s = rowSum * scale;
-    if (s <= 0) return Infinity;
-    const max = row[0].size * scale;
-    const min = row[row.length - 1].size * scale;
-    const sq = shortSide * shortSide;
-    return Math.max((sq * max) / (s * s), (s * s) / (sq * min));
-  }
-
-  function squarify(items, x, y, w, h) {
+  function layoutRows(items, w, h) {
     const out = [];
-    let remaining = items.filter((d) => d.size > 0).slice().sort((a, b) => b.size - a.size);
+    const list = items.filter((d) => d.size > 0).slice().sort((a, b) => b.size - a.size);
+    let total = 0;
+    for (const item of list) total += item.size;
+    if (total <= 0) return out;
 
-    while (remaining.length && w > 0.5 && h > 0.5) {
-      let totalRem = 0;
-      for (const item of remaining) totalRem += item.size;
-      if (totalRem <= 0) break;
-
-      const scale = (w * h) / totalRem;
-      const shortSide = Math.min(w, h);
-      const row = [];
-      let rowSum = 0;
-      let prevWorst = Infinity;
-
-      while (remaining.length) {
-        const candidate = remaining[0];
-        const nextSum = rowSum + candidate.size;
-        const ratio = worstRatio(row.concat([candidate]), nextSum, shortSide, scale);
-        // Adding this tile is only worth it while it makes the row *less* oblong.
-        if (row.length === 0 || ratio <= prevWorst) {
-          row.push(remaining.shift());
-          rowSum = nextSum;
-          prevWorst = ratio;
-        } else break;
-      }
-
-      const rowArea = rowSum * scale;
-      if (w >= h) {
-        const rw = rowArea / h;
-        let cy = y;
-        for (const item of row) {
-          const rh = (item.size * scale) / rw;
-          out.push({ item: item, x: x, y: cy, w: rw, h: rh });
-          cy += rh;
-        }
-        x += rw; w -= rw;
-      } else {
-        const rh = rowArea / w;
-        let cx = x;
-        for (const item of row) {
-          const rw = (item.size * scale) / rh;
-          out.push({ item: item, x: cx, y: y, w: rw, h: rh });
-          cx += rw;
-        }
-        y += rh; h -= rh;
-      }
+    let y = 0;
+    for (const item of list) {
+      const rh = (item.size / total) * h;
+      out.push({ item: item, x: 0, y: y, w: w, h: rh });
+      y += rh;
     }
     return out;
   }
@@ -114,7 +72,7 @@
       return;
     }
 
-    const placed = squarify(children, 0, 0, W, H);
+    const placed = layoutRows(children, W, H);
     const pending = [];   // labels to measure once they are in the document
 
     for (const cell of placed) {
@@ -184,5 +142,5 @@
     for (const entry of pending) fitLabel(entry);
   }
 
-  global.Treemap = { render: render, squarify: squarify };
+  global.Treemap = { render: render, layoutRows: layoutRows };
 })(window);

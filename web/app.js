@@ -167,13 +167,132 @@
 
   function current() { return trail[trail.length - 1]; }
 
+  // Bars are always full width, so height is the only scarce dimension. Grow
+  // the section so even the smallest visible bar clears the label threshold,
+  // capped so one tiny outlier can't blow the section up indefinitely.
+  function treemapHeight(kids) {
+    const MIN_HEIGHT = 300, MAX_HEIGHT = 640, MIN_ROW_HEIGHT = 30;
+    if (!kids || !kids.length) return MIN_HEIGHT;
+    let total = 0, minSize = Infinity;
+    kids.forEach((d) => { total += d.size; if (d.size > 0 && d.size < minSize) minSize = d.size; });
+    if (!total || !isFinite(minSize)) return MIN_HEIGHT;
+    const needed = Math.ceil((MIN_ROW_HEIGHT * total) / minSize);
+    return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, needed));
+  }
+
+  // Pinned custom paths: bookmarks into the already-scanned tree, so adding one
+  // costs no server round trip and can never reach outside what was walked.
+  const PIN_KEY = "kanshi-pins";
+  function loadPins() {
+    try { return JSON.parse(localStorage.getItem(PIN_KEY)) || []; } catch (e) { return []; }
+  }
+  function savePins() { localStorage.setItem(PIN_KEY, JSON.stringify(pins)); }
+  let pins = loadPins();
+
+  // Longest matching root label wins, so "/mnt/data/x" resolves against the
+  // "/mnt/data" root rather than the "/" root that also technically contains it.
+  function bestRootForPath(path) {
+    let best = null;
+    storage.roots.forEach((r, i) => {
+      const label = r.name;
+      const matches = label === "/" ? path.indexOf("/") === 0 : (path === label || path.indexOf(label + "/") === 0);
+      if (!matches) return;
+      if (!best || label.length > best.label.length) {
+        const rest = label === "/" ? path.slice(1) : path.slice(label.length + 1);
+        best = { rootIndex: i, label: label, segs: rest.split("/").filter(Boolean) };
+      }
+    });
+    return best;
+  }
+
+  function resolvePin(pin) {
+    const idx = storage.roots.findIndex((r) => r.name === pin.root);
+    if (idx < 0) return null;
+    let node = storage.roots[idx];
+    const resTrail = [node];
+    for (const seg of pin.segs) {
+      const kids2 = node.children || [];
+      const hit = kids2.find((k) => k.name === seg);
+      if (!hit) break;
+      node = hit;
+      resTrail.push(node);
+    }
+    return { rootIndex: idx, trail: resTrail, complete: resTrail.length === pin.segs.length + 1 };
+  }
+
+  function goToPin(pin) {
+    const res = resolvePin(pin);
+    if (!res) return;
+    rootIndex = res.rootIndex;
+    trail = res.trail;
+    drawStorage();
+    if (!res.complete) {
+      $("#tm-focus").textContent = "Landed as deep as the scan reaches — the rest is below the scan depth or folded away.";
+    }
+  }
+
+  function removePin(pin) {
+    pins = pins.filter((p) => !(p.root === pin.root && p.label === pin.label));
+    savePins();
+    renderRootBar();
+  }
+
+  function flashPinError(msg) { $("#pinform-err").textContent = msg; }
+
+  function submitPin(raw) {
+    const path = raw.trim();
+    if (path.indexOf("/") !== 0) { flashPinError("Use an absolute path, e.g. /mnt/data/media"); return; }
+    const match = bestRootForPath(path);
+    if (!match) { flashPinError("No storage root covers that path"); return; }
+    const pin = { root: storage.roots[match.rootIndex].name, segs: match.segs, label: path };
+    if (!pins.some((p) => p.root === pin.root && p.label === pin.label)) {
+      pins.push(pin);
+      savePins();
+    }
+    renderRootBar();
+    goToPin(pin);
+    hidePinForm();
+  }
+
+  function showPinForm() {
+    $("#pinform-err").textContent = "";
+    $("#pinform").hidden = false;
+    $("#pinform-input").value = "";
+    $("#pinform-input").focus();
+  }
+  function hidePinForm() { $("#pinform").hidden = true; }
+
+  $("#pinform").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    submitPin($("#pinform-input").value);
+  });
+  $("#pinform-cancel").addEventListener("click", hidePinForm);
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
   function renderRootBar() {
-    $("#rootbar").innerHTML = storage.roots.map((r, i) =>
+    const rootChips = storage.roots.map((r, i) =>
       '<button role="tab" class="chip' + (i === rootIndex ? " is-on" : "") + '" data-i="' + i + '" type="button" aria-selected="' +
-      (i === rootIndex) + '">' + r.name + " · " + bytes(r.size) + "</button>").join("");
-    $("#rootbar").querySelectorAll("button").forEach((b) => {
+      (i === rootIndex) + '">' + escapeHtml(r.name) + " · " + bytes(r.size) + "</button>").join("");
+    const pinChips = pins.map((p, i) => {
+      const label = escapeHtml(p.label);
+      return '<span class="chip pin" data-i="' + i + '">' +
+        '<button type="button" class="pin-go" title="' + label + '">' + label + "</button>" +
+        '<button type="button" class="pin-x" aria-label="Remove pinned path">×</button></span>';
+    }).join("");
+    $("#rootbar").innerHTML = rootChips + pinChips +
+      '<button class="chip pin-add" id="pin-add" type="button">+ Add path</button>';
+    $("#rootbar").querySelectorAll("button.chip[data-i]").forEach((b) => {
       b.addEventListener("click", () => { rootIndex = +b.dataset.i; trail = [storage.roots[rootIndex]]; drawStorage(); });
     });
+    $("#rootbar").querySelectorAll(".chip.pin").forEach((span) => {
+      const pin = pins[+span.dataset.i];
+      span.querySelector(".pin-go").addEventListener("click", () => goToPin(pin));
+      span.querySelector(".pin-x").addEventListener("click", () => removePin(pin));
+    });
+    $("#pin-add").addEventListener("click", showPinForm);
   }
 
   function renderCrumbs() {
@@ -212,7 +331,8 @@
 
     const box = svg.parentElement.getBoundingClientRect();
     const width = Math.max(200, Math.round(box.width));
-    const height = Math.round(parseFloat(getComputedStyle(svg).height)) || 300;
+    const height = treemapHeight(kids);
+    svg.style.height = height + "px";
     svg.setAttribute("height", height);
 
     Treemap.render(svg, kids, {
