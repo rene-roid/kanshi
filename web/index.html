@@ -50,6 +50,10 @@
       <h2 id="stor-h">Storage map</h2>
       <button id="rescan" class="btn" type="button">Rescan</button>
     </div>
+    <div class="scan-progress" id="scan-progress" hidden aria-live="polite">
+      <div class="meter-track"><div class="meter-fill" id="scan-progress-fill" style="width:0%"></div></div>
+      <p class="muted small" id="scan-progress-label"></p>
+    </div>
     <div class="rootbar" id="rootbar" role="tablist" aria-label="Storage root"></div>
     <form class="pinform" id="pinform" hidden>
       <input id="pinform-input" type="text" placeholder="/mnt/data/media/movies" autocomplete="off" spellcheck="false">

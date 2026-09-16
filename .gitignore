@@ -13,18 +13,10 @@ pnpm-debug.log*
 .yarn/
 .pnp.*
 
-# Python environments, bytecode, and tooling caches
-__pycache__/
-*.py[cod]
-*.so
-.venv/
-venv/
-env/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
+# Go build output — the binary is named after the module
+/kanshi
+*.test
+*.out
 
 # Build and test output
 build/

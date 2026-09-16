@@ -1,5 +1,5 @@
 .git
+.github
 .env
-__pycache__
-*.pyc
+docs
 README.md
