@@ -100,6 +100,16 @@ type containerMeta struct {
 	Status  string            `json:"Status"`
 	Created int64             `json:"Created"`
 	Labels  map[string]string `json:"Labels"`
+	Ports   []portMeta        `json:"Ports"`
+}
+
+// portMeta is one entry of the engine's Ports array. PublicPort is absent for
+// a port that is merely EXPOSEd rather than published to the host.
+type portMeta struct {
+	IP          string `json:"IP"`
+	PrivatePort int    `json:"PrivatePort"`
+	PublicPort  int    `json:"PublicPort"`
+	Type        string `json:"Type"`
 }
 
 // Pointers on total_usage and system_cpu_usage so a missing field is
@@ -162,6 +172,17 @@ type Container struct {
 	PIDs       int     `json:"pids"`
 	Net        *Net    `json:"net"`
 	Blkio      *Blkio  `json:"blkio"`
+	Ports      []Port  `json:"ports"`
+}
+
+// Port is one published or exposed mapping. Public is 0 when the port is only
+// exposed inside Docker's own networks, which the UI renders without a link
+// because there is no host address to send the browser to.
+type Port struct {
+	Public  int    `json:"public"`
+	Private int    `json:"private"`
+	Type    string `json:"type"`
+	IP      string `json:"ip,omitempty"`
 }
 
 type Net struct {
@@ -323,6 +344,73 @@ func health(status string) *string {
 	return &inner
 }
 
+// ports normalises the engine's Ports array for the UI.
+//
+// A dual-stack publish shows up twice — once on 0.0.0.0 and once on :: — for
+// what is one mapping as far as anybody reading the dashboard is concerned, so
+// entries are collapsed on (public, private, proto). The surviving IP is kept
+// only when every binding for that mapping is to a specific address: a
+// wildcard bind tells the browser nothing it does not already know, whereas a
+// 127.0.0.1-only publish is worth showing because the link will not work from
+// another machine.
+func ports(meta containerMeta) []Port {
+	if len(meta.Ports) == 0 {
+		return nil
+	}
+	type key struct {
+		public, private int
+		proto           string
+	}
+	seen := make(map[key]int, len(meta.Ports))
+	out := make([]Port, 0, len(meta.Ports))
+	for _, p := range meta.Ports {
+		if p.PrivatePort == 0 {
+			continue
+		}
+		proto := p.Type
+		if proto == "" {
+			proto = "tcp"
+		}
+		k := key{p.PublicPort, p.PrivatePort, proto}
+		if i, ok := seen[k]; ok {
+			if isWildcard(p.IP) {
+				out[i].IP = ""
+			}
+			continue
+		}
+		seen[k] = len(out)
+		ip := p.IP
+		if isWildcard(ip) {
+			ip = ""
+		}
+		out = append(out, Port{Public: p.PublicPort, Private: p.PrivatePort, Type: proto, IP: ip})
+	}
+
+	// Published ports first — those are the ones you can actually click — then
+	// ascending, so the order is stable across ticks regardless of how the
+	// daemon happened to list them.
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if (a.Public == 0) != (b.Public == 0) {
+			return b.Public == 0
+		}
+		if a.Public != b.Public {
+			return a.Public < b.Public
+		}
+		if a.Private != b.Private {
+			return a.Private < b.Private
+		}
+		return a.Type < b.Type
+	})
+	return out
+}
+
+// isWildcard reports whether the daemon bound every address rather than a
+// chosen one. An empty IP means the same thing on an exposed-only port.
+func isWildcard(ip string) bool {
+	return ip == "" || ip == "0.0.0.0" || ip == "::" || ip == "[::]"
+}
+
 /* ── sampling ───────────────────────────────────────────────────────────── */
 
 func (c *Client) one(ctx context.Context, meta containerMeta) *Container {
@@ -349,6 +437,7 @@ func (c *Client) one(ctx context.Context, meta containerMeta) *Container {
 		PIDs:     s.PidsStats.Current,
 		Net:      c.network(meta.ID, &s, time.Now()),
 		Blkio:    blockIO(&s),
+		Ports:    ports(meta),
 	}
 	if limit > 0 {
 		out.MemPercent = math.Round(float64(used)/float64(limit)*100*100) / 100
@@ -402,7 +491,7 @@ func (c *Client) Sample(ctx context.Context) Result {
 		containers = append(containers, Container{
 			ID: shortID(meta.ID), Name: name, FullName: full, Project: project,
 			Image: meta.Image, State: meta.State, Status: meta.Status,
-			Created: meta.Created,
+			Created: meta.Created, Ports: ports(meta),
 		})
 	}
 

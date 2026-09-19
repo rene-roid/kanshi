@@ -283,6 +283,30 @@ main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid;
 .ctr-sub { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctr-bar { height: 3px; border-radius: 2px; background: var(--track-ok); margin-top: 5px; overflow: hidden; }
 .ctr-bar i { display: block; height: 100%; background: var(--series-1); border-radius: 2px; transition: width .3s ease; }
+/* Port mappings. These sit in the same quiet register as .ctr-sub above: 11px,
+   dot-separated, no box. Pills are the page's vocabulary for controls (sortbar,
+   rootbar, pins), so borrowing that shape for row metadata would both add
+   chrome and promise a click most of these do not have. Linkness is carried by
+   an underline instead, which needs no hue to read. */
+.ctr-ports {
+  font-size: 11px; line-height: 1.5; margin-top: 3px; color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Only the separator is dimmed to --baseline, and only because it is pure
+   punctuation. Everything carrying a number stays at --text-secondary: at 11px
+   these are small text, and --text-muted would put them at 3.5:1 in light mode.
+   Hierarchy comes from the underline instead, which costs no contrast. */
+.ctr-ports .sep { font-style: normal; color: var(--baseline); padding: 0 5px; }
+.ctr-ports .arr { font-style: normal; padding: 0 1px; }
+.ctr-ports .pr { font-style: normal; padding-left: 3px; }
+.ctr-ports a {
+  color: var(--text-primary); text-decoration: underline;
+  text-decoration-color: var(--baseline); text-underline-offset: 2px;
+}
+.ctr-ports a:hover { text-decoration-color: var(--series-1); }
+.ctr-ports a:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; border-radius: 2px; }
+
 .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex: none; }
 .dot.run { background: var(--status-good); } .dot.stop { background: var(--text-muted); }
 .dot.bad { background: var(--status-critical); }
