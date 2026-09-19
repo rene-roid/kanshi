@@ -107,6 +107,85 @@
 
   function netTotal(c) { return c.net ? c.net.rx_rate + c.net.tx_rate : -1; }
 
+  /* ── port mappings ──────────────────────────────────────────────────── */
+  // A container publishes on the same host that served this page — a Tailscale
+  // IP, a LAN name, whatever is in the address bar — so the page's own
+  // hostname is what a port link should point at. Hard-coding one would break
+  // the moment the dashboard is reached by any other route.
+  function hostAddr() {
+    const h = location.hostname;
+    return h.indexOf(":") >= 0 ? "[" + h + "]" : h; // a bare IPv6 literal needs brackets
+  }
+  // Docker hands the bind address through verbatim; keep an href to characters
+  // an address can actually contain rather than trusting the daemon's string.
+  function bindAddr(ip) {
+    if (!ip || !/^[0-9a-fA-F.:]+$/.test(ip)) return "";
+    return ip.indexOf(":") >= 0 ? "[" + ip + "]" : ip;
+  }
+
+  // Past a handful the line stops being glanceable, and the row is one line
+  // tall either way — so the overflow is counted rather than wrapped.
+  const PORT_LIMIT = 5;
+
+  function proto(p) { return String(p.type || "tcp").replace(/[^a-z]/gi, "").toLowerCase(); }
+  // host→internal reads as one token, so the arrow is set tight and muted and
+  // the two numbers carry the weight.
+  function mapping(pub, priv, suffix) {
+    return pub + '<i class="arr">→</i>' + priv + suffix;
+  }
+
+  function portLine(c) {
+    if (!c.ports || !c.ports.length) return "";
+    const published = c.ports.filter((p) => Number(p.public) > 0);
+    const internal = c.ports.filter((p) => !Number(p.public));
+    const parts = [];
+
+    published.slice(0, PORT_LIMIT).forEach((p) => {
+      const pub = Number(p.public), priv = Number(p.private), pr = proto(p);
+      const suffix = pr === "tcp" ? "" : '<i class="pr">' + pr + "</i>";
+      const label = mapping(pub, priv, suffix);
+      // Only a plain TCP publish is something a browser can open; UDP gets the
+      // same reading without the dead link.
+      if (pr !== "tcp") {
+        parts.push('<span title="Host port ' + pub + ' → internal port ' + priv + ', ' + pr +
+          ' — not reachable from a browser">' + label + "</span>");
+        return;
+      }
+      // A specific bind address is the authoritative target; a wildcard bind
+      // means "wherever you reached this page from".
+      const url = "http://" + (bindAddr(p.ip) || hostAddr()) + ":" + pub;
+      const hint = "Open " + url + " — host port " + pub + " → internal port " + priv;
+      parts.push('<a href="' + url + '" target="_blank" rel="noopener noreferrer" title="' + hint +
+        '" aria-label="' + hint + '">' + label + "</a>");
+    });
+    if (published.length > PORT_LIMIT) {
+      parts.push(quiet(published.length - PORT_LIMIT + " more", published.slice(PORT_LIMIT)
+        .map((p) => p.public + " → " + p.private).join(", ")));
+    }
+
+    if (!published.length) {
+      // Nothing published, so the internal ports are all this row has to say.
+      internal.slice(0, PORT_LIMIT).forEach((p) => {
+        const pr = proto(p), priv = Number(p.private);
+        parts.push(quiet(priv + (pr === "tcp" ? "" : '<i class="pr">' + pr + "</i>"),
+          "Internal port " + priv + " — exposed inside Docker only, not published to the host"));
+      });
+      if (internal.length > PORT_LIMIT) parts.push(quiet("+" + (internal.length - PORT_LIMIT), ""));
+    } else if (internal.length) {
+      // The published ports are what you came here for; the rest fold away so
+      // a container like gluetun does not bury them under nine entries.
+      parts.push(quiet(internal.length + " internal", "Exposed inside Docker only: " +
+        internal.map((p) => p.private + "/" + proto(p)).join(", ")));
+    }
+
+    return '<div class="ctr-ports">' + parts.join('<i class="sep">·</i>') + "</div>";
+  }
+
+  // Not a link and not meant to compete with one.
+  function quiet(label, hint) {
+    return '<span class="pq"' + (hint ? ' title="' + hint + '"' : "") + ">" + label + "</span>";
+  }
+
   function renderContainers(d) {
     lastDocker = d;
     if (!d) return;
@@ -141,6 +220,7 @@
       return '<tr class="' + (running ? "" : "is-stopped") + '" title="' + (c.full_name || c.name) + '">' +
         "<td><div class=\"name-cell\"><i class=\"dot " + dot + '"></i><span class="ctr-name">' + c.name + "</span></div>" +
         '<div class="ctr-sub">' + sub + "</div>" +
+        portLine(c) +
         '<div class="ctr-bar"><i style="width:' + barPct + '%"></i></div></td>' +
         '<td class="num">' + (running ? c.cpu.toFixed(1) + "%" : "—") + "</td>" +
         '<td class="num">' + mem + "</td>" +

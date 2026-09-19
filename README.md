@@ -16,6 +16,104 @@ every container — no historical storage, no alerting, no external services.
 
 ---
 
+## Requirements
+
+- **Linux host.** Metrics come from `/proc`, `/sys` and `statfs(2)` — macOS and Windows are not supported.
+- **Docker Engine** with the **Compose v2 plugin** (`docker compose version` must work).
+- **Access to `/var/run/docker.sock`** — run as root or as a user in the `docker` group.
+- **Node.js 18+** — only if you install with `npx`.
+- Nothing else. No Go toolchain, no database, no build step: the image compiles the binary itself.
+
+## Run it
+
+From a clone of this repository:
+
+```sh
+docker compose up -d --build
+```
+
+Or from anywhere, without cloning:
+
+```sh
+npx @yuuki824/kanshi
+```
+
+Either way the dashboard is at <http://localhost:8100>. The first run builds the
+image, so give it a minute before the health check passes.
+
+## Expose it on a network
+
+Kanshi binds to `127.0.0.1` by default — private to the host. Set `KANSHI_HOST`
+to change that:
+
+```sh
+# Tailnet only (recommended). Reachable from your other Tailscale devices.
+KANSHI_HOST="$(tailscale ip -4)" docker compose up -d
+
+# Local LAN only, on this machine's LAN address.
+KANSHI_HOST=192.168.1.50 docker compose up -d
+
+# Every interface. Only behind an authenticated reverse proxy.
+KANSHI_HOST=0.0.0.0 docker compose up -d
+```
+
+The same variables work with `npx`:
+
+```sh
+KANSHI_HOST="$(tailscale ip -4)" npx @yuuki824/kanshi
+```
+
+> **`0.0.0.0` publishes Docker information to anyone who can reach the port.**
+> Prefer the Tailscale address.
+
+To make it permanent, copy `.env.example` to `.env` and edit it. A `.env` in the
+directory you run `npx` from is picked up automatically.
+
+## Common commands
+
+```sh
+docker compose logs -f          # follow logs
+docker compose restart          # restart it
+docker compose down             # stop and remove
+docker compose up -d --build    # rebuild after changing the source
+
+npx @yuuki824/kanshi logs -f    # same, via the launcher
+npx @yuuki824/kanshi down
+npx @yuuki824/kanshi@latest     # update to the newest published version
+```
+
+Not starting? Check the container state and the last lines of its log:
+
+```sh
+docker ps --filter name=kanshi
+docker logs --tail=100 kanshi
+```
+
+## Settings
+
+Every value below is the built-in default; override it in `.env` or the
+environment.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `KANSHI_HOST` | `127.0.0.1` | Bind address (see above). Set by Compose; the bare binary defaults to `0.0.0.0` |
+| `KANSHI_PORT` | `8100` | Bind port |
+| `KANSHI_POLL_INTERVAL` | `5` | Seconds between live ticks |
+| `KANSHI_IDLE_TIMEOUT` | `30` | Seconds with no browser before polling stops |
+| `KANSHI_DOCKER_CONCURRENCY` | `8` | Parallel container stat requests |
+| `KANSHI_STORAGE_ROOTS` | `/=/hostfs,/mnt/data=/mnt/data` | `label=path` pairs for the storage map |
+| `KANSHI_STORAGE_INTERVAL` | `1800` | Seconds between disk walks |
+| `KANSHI_STORAGE_EXCLUDE` | *(empty)* | Comma-separated paths to skip, container-side |
+| `KANSHI_TREE_DEPTH` | `4` | Treemap depth kept after the walk |
+| `KANSHI_WEB_DIR` | *(embedded)* | Serve `web/` from disk instead of the binary |
+
+The walk of `/` is the slowest thing here, dominated by ~100k overlay2 files.
+To skip them, at the cost of their ~48 GB no longer being counted:
+
+```sh
+KANSHI_STORAGE_EXCLUDE=/hostfs/var/lib/docker
+```
+
 ## Screenshots
 
 <table>
@@ -35,22 +133,18 @@ every container — no historical storage, no alerting, no external services.
 </tr>
 </table>
 
-By default it is reachable only from the local machine:
-
-    http://localhost:8100
-
 ## Features
 
 - 📊 **Processor** — hero utilisation %, per-core bars, load average, temperature, host net/disk throughput
 - 🧠 **Memory & volumes** — RAM, swap, and one meter per storage root
 - 🗺 **Storage map** — squarified treemap you can tap to drill into, with a table twin below; depth-bounded so it stays fast on large filesystems
-- 🐳 **Containers** — per-container CPU%, memory, network rate and health straight from the Docker Engine API
+- 🐳 **Containers** — per-container CPU%, memory, network rate and health straight from the Docker Engine API, plus each published `host → internal` port mapping as a link that opens on whatever address you reached the dashboard at
 - ⚡ **One SSE connection** — the server pushes every tick over `/api/stream`; nothing polls, nothing needs a manual reload
 - 😴 **Idles to near-zero** — the poller and the Docker socket both go quiet after `KANSHI_IDLE_TIMEOUT` with nobody watching
 - 🪶 **9.6 MB image, ~8 MB resident** — one static Go binary on `scratch`: no interpreter, no shell, no package manager
 - 🔒 **Tailscale-friendly** — binds to `127.0.0.1` by default; point it at a Tailscale IP to share it on a tailnet instead of the open LAN
 
-## Tech Stack
+## Tech stack
 
 | Layer | Choice |
 |---|---|
@@ -61,77 +155,35 @@ By default it is reachable only from the local machine:
 | Container metrics | Docker Engine API (one-shot stats, not the streaming daemon default) |
 | Packaging | `scratch` image via multi-stage build, Docker Compose, `npx` launcher |
 
-## Install with npx
+## API
 
-`npx` downloads and runs an npm package; it does not upload a project. This
-repository includes a small npm launcher which starts the included Docker
-Compose app, so Docker (with the Compose v2 plugin) is still required.
+| Card | Source | Refresh |
+|---|---|---|
+| Processor — hero %, per-core bars, load, temp, host net/disk throughput | `/proc/stat`, `/proc/net/dev`, `/proc/diskstats`, `/sys` hwmon | every `KANSHI_POLL_INTERVAL` |
+| Memory & volumes — RAM, swap, one meter per storage root | `/proc/meminfo` + `statfs(2)` | same tick |
+| Storage map — squarified treemap, tap to drill, table twin below | cached `getdents`+`lstat` walk | every `KANSHI_STORAGE_INTERVAL`, or the Rescan button |
+| Containers — CPU%, memory, network rates, health, port mappings | Docker Engine API | same tick |
 
-From any directory, run:
+The browser holds **one SSE connection** (`/api/stream`) and the server pushes
+each tick. There is also a plain REST surface: `/api/vitals`,
+`/api/containers`, `/api/storage`, `POST /api/storage/rescan`, `/healthz`.
 
-```sh
-npx @yuuki824/kanshi
-```
+## Building
 
-The first run downloads the package, builds the Docker image, and starts a
-container named `kanshi`. Open <http://localhost:8100> once it says the
-container started. It may take a minute for the initial health check to pass.
-
-The command is equivalent to `docker compose up -d --build`. To run without
-the confirmation prompt:
+Docker is the only build dependency; the image compiles the binary itself.
 
 ```sh
-npx --yes @yuuki824/kanshi
+docker compose up -d --build
 ```
 
-### Manage the container
+With a local Go toolchain (1.22+), `go build .` and `go vet ./...` work from the
+repository root with no module downloads — there are no third-party imports. The
+frontend is embedded with `//go:embed`, so a rebuild is needed after editing
+anything under `web/`; set `KANSHI_WEB_DIR=./web` to serve it from disk instead
+while iterating. Note that a binary run outside Compose binds `0.0.0.0` unless
+you set `KANSHI_HOST` yourself.
 
-```sh
-# Stop it without removing it.
-docker stop kanshi
-
-# Start the stopped container again.
-docker start kanshi
-
-# Follow application logs.
-docker logs -f kanshi
-
-# Remove the current container, for example before installing an update.
-docker rm -f kanshi
-
-# Download the newest package version and start it again.
-npx @yuuki824/kanshi@latest
-```
-
-You can also pass Docker Compose commands after the package name:
-
-```sh
-npx @yuuki824/kanshi logs -f
-npx @yuuki824/kanshi down
-```
-
-### Network access
-
-Kanshi listens on `127.0.0.1:8100` by default, so it is private to the host.
-To share it over Tailscale, use the machine's Tailscale IP:
-
-```sh
-KANSHI_HOST="$(tailscale ip -4)" npx @yuuki824/kanshi
-```
-
-Do not use `KANSHI_HOST=0.0.0.0` unless the machine is protected by an
-authenticated reverse proxy: the dashboard can read Docker information.
-
-### Troubleshooting
-
-Check whether the container is running and inspect a restart or startup error:
-
-```sh
-docker ps --filter name=kanshi
-docker logs --tail=100 kanshi
-```
-
-To publish the launcher, use:
+Publishing the npm launcher:
 
 ```sh
 npm login
@@ -139,32 +191,6 @@ npm run test
 npm run pack:check
 npm publish
 ```
-
-The scoped package is configured to publish publicly. Use a unique package
-name you control; `npm publish --dry-run` is a final check that uploads nothing.
-
-## Run it
-
-```sh
-docker compose up -d --build
-```
-
-Copy `.env.example` to `.env` to override anything. Every setting has a
-conservative default; the file documents each one.
-
-## API
-
-| Card | Source | Refresh |
-|---|---|---|
-| Processor — hero %, per-core bars, load, temp, host net/disk throughput | `/proc/stat`, `/proc/net/dev`, `/proc/diskstats`, `/sys` hwmon | every `KANSHI_POLL_INTERVAL` (5s) |
-| Memory & volumes — RAM, swap, one meter per storage root | `/proc/meminfo` + `statfs(2)` | same tick |
-| Storage map — squarified treemap, tap to drill, table twin below | cached `getdents`+`lstat` walk | every `KANSHI_STORAGE_INTERVAL` (30m), or the Rescan button |
-| Containers — CPU%, memory, network rates, health | Docker Engine API | same tick |
-
-The browser holds **one SSE connection** (`/api/stream`) and the server pushes
-each tick, so nothing polls and nothing needs a manual reload. There is also a
-plain REST surface: `/api/vitals`, `/api/containers`, `/api/storage`,
-`POST /api/storage/rescan`, `/healthz`.
 
 ## Design notes
 
@@ -195,47 +221,18 @@ cadence throughout.
 directory it is counted and the storage card says so — a silently truncated tree
 that under-reports by 300 GB is worse than an obviously incomplete one.
 
-## Permissions
+**Permissions.** Runs as root with `cap_drop: ALL` plus **`DAC_READ_SEARCH`** —
+read and traverse bypass, but *not* write bypass (that would be `DAC_OVERRIDE`).
+Without it the walk cannot enter `/home/yuuki` (mode 0750) and silently
+under-reports the root filesystem by ~330 GB. The rootfs is read-only and every
+host mount is `:ro`.
 
-Runs as root with `cap_drop: ALL` plus **`DAC_READ_SEARCH`** — read and traverse
-bypass, but *not* write bypass (that would be `DAC_OVERRIDE`). Without it the
-walk cannot enter `/home/yuuki` (mode 0750) and silently under-reports the root
-filesystem by ~330 GB. The rootfs is read-only and every host mount is `:ro`.
-
-## About kanshi's own memory number
-
-The dashboard will show kanshi using far more memory than the process actually
-has. That figure is mostly **reclaimable kernel dentry cache** charged to its
-cgroup — an unavoidable side effect of `lstat`-ing ~150k files during a walk.
-Measured anonymous memory is **~8 MB at rest and ~20 MB at the peak of a full
-walk**; `mem_limit` acts as a ceiling on the cache and the kernel reclaims it
-under pressure. `GOMEMLIMIT` sits below `mem_limit` so an unusually large
-filesystem makes the collector work harder instead of getting the container
-OOM-killed. The number matches what `docker stats` reports for any container,
-which is the point.
-
-## Building
-
-The only build dependency is Docker; the image compiles the binary itself.
-
-```sh
-docker compose up -d --build
-```
-
-With a local Go toolchain (1.22+), `go build .` and `go vet ./...` work from the
-repository root with no module downloads — there are no third-party imports. The
-frontend is embedded with `//go:embed`, so a rebuild is needed after editing
-anything under `web/`; set `KANSHI_WEB_DIR=./web` to serve it from disk instead
-while iterating.
-
-## Tuning
-
-Slowest thing here is the walk of `/`, dominated by ~100k overlay2 files under
-`/var/lib/docker`. To skip it:
-
-```sh
-KANSHI_STORAGE_EXCLUDE=/hostfs/var/lib/docker
-```
-
-Its ~48 GB then disappears from the `/` total, so only do this if you don't want
-it counted.
+**About kanshi's own memory number.** The dashboard will show kanshi using far
+more memory than the process actually has. That figure is mostly **reclaimable
+kernel dentry cache** charged to its cgroup — an unavoidable side effect of
+`lstat`-ing ~150k files during a walk. Measured anonymous memory is **~8 MB at
+rest and ~20 MB at the peak of a full walk**; `mem_limit` acts as a ceiling on
+the cache and the kernel reclaims it under pressure. `GOMEMLIMIT` sits below
+`mem_limit` so an unusually large filesystem makes the collector work harder
+instead of getting the container OOM-killed. The number matches what
+`docker stats` reports for any container, which is the point.
