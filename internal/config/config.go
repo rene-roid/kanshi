@@ -31,13 +31,13 @@ type Config struct {
 	// the totals, so only exclude things you truly don't want counted.
 	StorageExclude   []string
 	StorageMinRescan time.Duration
+	// Share of one core, in percent, the walk may average. It sleeps between
+	// directories to stay under it. 0 or 100+ means unthrottled.
+	StorageCPU float64
 
-	// Tree pruning, to keep the JSON the phone downloads small.
+	// Directories deeper than this have no listing of their own; their bytes
+	// roll up into the nearest ancestor that does.
 	TreeDepth int
-	// Children smaller than this fraction of their parent are folded into an
-	// aggregate node rather than shipped individually.
-	TreeMinFraction float64
-	TreeMaxChildren int
 
 	Host string
 	Port int
@@ -83,9 +83,8 @@ func Load() Config {
 		StorageInterval:   envSeconds("KANSHI_STORAGE_INTERVAL", 1800*time.Second),
 		StorageExclude:    envList("KANSHI_STORAGE_EXCLUDE", ""),
 		StorageMinRescan:  envSeconds("KANSHI_STORAGE_MIN_RESCAN", 30*time.Second),
+		StorageCPU:        envFloat("KANSHI_STORAGE_CPU", 25),
 		TreeDepth:         envInt("KANSHI_TREE_DEPTH", 4),
-		TreeMinFraction:   envFloat("KANSHI_TREE_MIN_FRACTION", 0.005),
-		TreeMaxChildren:   envInt("KANSHI_TREE_MAX_CHILDREN", 24),
 		Host:              envString("KANSHI_HOST", "0.0.0.0"),
 		Port:              envInt("KANSHI_PORT", 8100),
 		WebDir:            envString("KANSHI_WEB_DIR", ""),

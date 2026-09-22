@@ -1,12 +1,9 @@
-/* Full-width stacked bars, ~90 lines of SVG. No charting library: the whole
- * point of this app is to have no external dependencies.
+/* Squarified treemap, ~150 lines of SVG. No charting library: the whole point
+ * of this app is to have no external dependencies.
  *
- * Each item is a bar spanning the full width, stacked top to bottom, height
- * proportional to its byte share. A squarified 2D treemap packs a dominant
- * item into a near-square block and leaves the rest a sliver whose width is
- * fixed by that item's share — no matter how tall the section grows, a 2%
- * item stays too narrow for its name. Giving every bar the full width means
- * only height is ever scarce, and the section can grow to make room for it. */
+ * Bruls/Huizing/van Wijk squarified layout — greedily fills rows along the
+ * short side, keeping each tile as close to square as it can, so tiles stay
+ * tappable on a phone instead of degenerating into slivers. */
 (function (global) {
   "use strict";
 
@@ -15,18 +12,66 @@
   const RADIUS = 3;
   const GLYPH = { dir: "▸", file: "·", rest: "⋯" };
 
-  function layoutRows(items, w, h) {
-    const out = [];
-    const list = items.filter((d) => d.size > 0).slice().sort((a, b) => b.size - a.size);
-    let total = 0;
-    for (const item of list) total += item.size;
-    if (total <= 0) return out;
+  function worstRatio(row, rowSum, shortSide, scale) {
+    if (!row.length) return Infinity;
+    const s = rowSum * scale;
+    if (s <= 0) return Infinity;
+    const max = row[0].size * scale;
+    const min = row[row.length - 1].size * scale;
+    const sq = shortSide * shortSide;
+    return Math.max((sq * max) / (s * s), (s * s) / (sq * min));
+  }
 
-    let y = 0;
-    for (const item of list) {
-      const rh = (item.size / total) * h;
-      out.push({ item: item, x: 0, y: y, w: w, h: rh });
-      y += rh;
+  function squarify(items, x, y, w, h) {
+    const out = [];
+    const remaining = items.filter((d) => d.size > 0).sort((a, b) => b.size - a.size);
+    let totalRem = 0;
+    for (const item of remaining) totalRem += item.size;
+    let next = 0;
+
+    while (next < remaining.length && w > 0.5 && h > 0.5 && totalRem > 0) {
+      const scale = (w * h) / totalRem;
+      const shortSide = Math.min(w, h);
+      const row = [];
+      let rowSum = 0;
+      let prevWorst = Infinity;
+
+      while (next < remaining.length) {
+        const candidate = remaining[next];
+        row.push(candidate);
+        const ratio = worstRatio(row, rowSum + candidate.size, shortSide, scale);
+        // Adding this tile is only worth it while it makes the row *less* oblong.
+        if (row.length === 1 || ratio <= prevWorst) {
+          rowSum += candidate.size;
+          prevWorst = ratio;
+          next++;
+        } else {
+          row.pop();
+          break;
+        }
+      }
+      totalRem -= rowSum;
+
+      const rowArea = rowSum * scale;
+      if (w >= h) {
+        const rw = rowArea / h;
+        let cy = y;
+        for (const item of row) {
+          const rh = (item.size * scale) / rw;
+          out.push({ item: item, x: x, y: cy, w: rw, h: rh });
+          cy += rh;
+        }
+        x += rw; w -= rw;
+      } else {
+        const rh = rowArea / w;
+        let cx = x;
+        for (const item of row) {
+          const rw = (item.size * scale) / rh;
+          out.push({ item: item, x: cx, y: y, w: rw, h: rh });
+          cx += rw;
+        }
+        y += rh; h -= rh;
+      }
     }
     return out;
   }
@@ -58,13 +103,43 @@
     if (node.getComputedTextLength() > entry.room) node.textContent = "";
   }
 
+  /* One set of listeners on the <svg>, reading the tile's index back off the
+   * event target — rather than four closures per tile rebuilt on every draw. */
+  function bind(svg) {
+    if (svg.__tm) return;
+    svg.__tm = { items: [], opts: {} };
+    const pick = (ev) => {
+      const tile = ev.target.closest && ev.target.closest(".tile");
+      return tile ? svg.__tm.items[+tile.dataset.i] : null;
+    };
+    const focus = (ev) => {
+      const d = pick(ev);
+      if (d && svg.__tm.opts.onFocus) svg.__tm.opts.onFocus(d);
+    };
+    const activate = (ev) => {
+      const d = pick(ev);
+      if (!d) return;
+      ev.preventDefault();
+      if (svg.__tm.opts.onSelect) svg.__tm.opts.onSelect(d);
+    };
+    svg.addEventListener("click", activate);
+    svg.addEventListener("mouseover", focus);
+    svg.addEventListener("focusin", focus);
+    svg.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") activate(ev);
+    });
+  }
+
   /* render(svg, children, { width, height, fmt, onSelect, onFocus }) */
   function render(svg, children, opts) {
     const W = opts.width, H = opts.height;
+    bind(svg);
+    svg.__tm.opts = opts;
     svg.setAttribute("viewBox", "0 0 " + W + " " + H);
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    svg.textContent = "";
 
     if (!children || !children.length) {
+      svg.__tm.items = [];
       const note = el("text", { x: W / 2, y: H / 2, "text-anchor": "middle",
         fill: "var(--text-muted)", "font-size": 13 });
       note.textContent = "Nothing to show here";
@@ -72,8 +147,10 @@
       return;
     }
 
-    const placed = layoutRows(children, W, H);
+    const placed = squarify(children, 0, 0, W, H);
+    const items = [];
     const pending = [];   // labels to measure once they are in the document
+    const frag = document.createDocumentFragment();
 
     for (const cell of placed) {
       const d = cell.item;
@@ -84,7 +161,8 @@
       if (w <= 0 || h <= 0) continue;
 
       const isRest = d.kind === "rest";
-      const group = el("g", { class: "tile", tabindex: 0, role: "button" });
+      const group = el("g", { class: "tile", tabindex: 0, role: "button", "data-i": items.length });
+      items.push(d);
       group.setAttribute("aria-label",
         d.name + ", " + opts.fmt(d.size) + (d.kind === "dir" ? ", folder" : ""));
 
@@ -127,20 +205,13 @@
           pending.push({ node: value, prefix: "", name: opts.fmt(d.size), room: w - 14 });
         }
       }
-
-      const focus = function () { opts.onFocus && opts.onFocus(d); };
-      const activate = function (ev) { ev.preventDefault(); opts.onSelect && opts.onSelect(d); };
-      group.addEventListener("click", activate);
-      group.addEventListener("mouseenter", focus);
-      group.addEventListener("focus", focus);
-      group.addEventListener("keydown", function (ev) {
-        if (ev.key === "Enter" || ev.key === " ") activate(ev);
-      });
-      svg.appendChild(group);
+      frag.appendChild(group);
     }
 
+    svg.__tm.items = items;
+    svg.appendChild(frag);
     for (const entry of pending) fitLabel(entry);
   }
 
-  global.Treemap = { render: render, layoutRows: layoutRows };
+  global.Treemap = { render: render, squarify: squarify };
 })(window);

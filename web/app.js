@@ -3,6 +3,15 @@
   "use strict";
 
   const $ = (sel) => document.querySelector(sel);
+
+  // Most of a tick's markup is identical to the last one: a stopped container,
+  // a meter that did not move. Skipping those writes spares the browser a
+  // reparse and relayout every few seconds on a page that may sit open all day.
+  function setHTML(el, html) {
+    if (el.__html === html) return;
+    el.__html = html;
+    el.innerHTML = html;
+  }
   const KB = 1024;
 
   /* ── formatting ─────────────────────────────────────────────────────── */
@@ -47,7 +56,7 @@
   const coreEls = [];
   function renderCpu(v) {
     const cpu = v.cpu;
-    $("#cpu-hero").innerHTML = cpu.percent.toFixed(0) + '<span class="hero-unit">%</span>';
+    setHTML($("#cpu-hero"), cpu.percent.toFixed(0) + '<span class="hero-unit">%</span>');
     $("#cpu-count").textContent = cpu.count;
     const hot = cpu.temp !== null && cpu.temp !== undefined;
     $("#cpu-meta").textContent = cpu.count + " cores" + (hot ? " · " + cpu.temp + "°C" : "");
@@ -57,7 +66,7 @@
       ["Net", "↓" + shortRate(v.network.rx) + "  ↑" + shortRate(v.network.tx)],
       ["Disk", "↓" + shortRate(v.diskio.read) + "  ↑" + shortRate(v.diskio.write)],
     ];
-    $("#cpu-aux").innerHTML = aux.map((r) => "<dt>" + r[0] + "</dt><dd>" + r[1] + "</dd>").join("");
+    setHTML($("#cpu-aux"), aux.map((r) => "<dt>" + r[0] + "</dt><dd>" + r[1] + "</dd>").join(""));
 
     const host = $("#cores");
     if (coreEls.length !== cpu.cores.length) {
@@ -98,7 +107,7 @@
     v.filesystems.forEach((fs) => {
       parts.push(meter(fs.label, fs.percent, bytes(fs.free) + " free", 80, 92));
     });
-    $("#meters").innerHTML = parts.join("");
+    setHTML($("#meters"), parts.join(""));
   }
 
   /* ── containers ─────────────────────────────────────────────────────── */
@@ -227,7 +236,7 @@
         '<td class="num">' + net + "</td>" +
         "</tr>";
     });
-    $("#ctr-tbl").querySelector("tbody").innerHTML = rows.join("");
+    setHTML($("#ctr-tbl").querySelector("tbody"), rows.join(""));
   }
 
   document.querySelectorAll(".sortbar .chip").forEach((chip) => {
@@ -240,28 +249,103 @@
   });
 
   /* ── storage ────────────────────────────────────────────────────────── */
+  // The server holds the whole walk; the page only ever has one directory of
+  // it. /api/storage is a one-line summary per root, and each directory is
+  // fetched from /api/storage/dir as it is opened — a few KB instead of the
+  // entire tree on every load.
   const svg = $("#treemap");
-  let storage = null;
+  let storage = null;     // scan status plus one summary per root
+  let scanStamp;          // the scan the cached listings belong to
   let rootIndex = 0;
-  let trail = [];       // node stack from the selected root down to the view
+  let segs = [];          // path below the root, one directory name per level
+  let listing = null;     // the directory on screen
+  let items = [];         // its contents as rendered, largest first
+  let navToken = 0;       // drops a slow response that a newer click overtook
+  const listings = new Map();   // "root/path" → listing, current scan only
+  const LISTING_CACHE = 64;
 
-  function current() { return trail[trail.length - 1]; }
+  // The table starts short and grows on request. The treemap always covers the
+  // whole directory, but slivers too thin to see or tap share one tile.
+  const PAGE = 15, MORE = 25;
+  const TILE_MIN_SHARE = 0.005, TILE_MAX = 40;
+  let shown = PAGE;
+  let showFiles = localStorage.getItem("kanshi-files") === "1";
 
-  // Bars are always full width, so height is the only scarce dimension. Grow
-  // the section so even the smallest visible bar clears the label threshold,
-  // capped so one tiny outlier can't blow the section up indefinitely.
-  function treemapHeight(kids) {
-    const MIN_HEIGHT = 300, MAX_HEIGHT = 640, MIN_ROW_HEIGHT = 30;
-    if (!kids || !kids.length) return MIN_HEIGHT;
-    let total = 0, minSize = Infinity;
-    kids.forEach((d) => { total += d.size; if (d.size > 0 && d.size < minSize) minSize = d.size; });
-    if (!total || !isFinite(minSize)) return MIN_HEIGHT;
-    const needed = Math.ceil((MIN_ROW_HEIGHT * total) / minSize);
-    return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, needed));
+  function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+  function currentName() {
+    return segs.length ? segs[segs.length - 1] : storage.roots[rootIndex].name;
+  }
+
+  // Everything in the current directory. Files are either named one by one or
+  // collapsed into a single entry, and whatever the walk counted but did not
+  // name gets an aggregate of its own, so the parts always add up.
+  function viewItems() {
+    const l = listing;
+    const out = l.dirs.map((d) => ({ name: d.name, size: d.size, kind: "dir" }));
+    if (showFiles) {
+      let named = 0;
+      l.files.forEach((f) => { out.push({ name: f.name, size: f.size, kind: "file" }); named += f.size; });
+      const rest = l.file_bytes - named, restCount = l.file_count - l.files.length;
+      if (rest > 0 && restCount > 0) out.push({ name: plural(restCount, "smaller file"), size: rest, kind: "rest" });
+    } else if (l.file_bytes > 0) {
+      out.push({ name: plural(l.file_count, "file"), size: l.file_bytes, kind: "rest", files: true });
+    }
+    if (l.deep > 0) out.push({ name: "deeper subfolders", size: l.deep, kind: "rest" });
+    return out.sort((a, b) => b.size - a.size);
+  }
+
+  // items is sorted, so everything below the cut is a suffix of it.
+  function tileItems(total) {
+    const floor = total * TILE_MIN_SHARE;
+    let keep = 0;
+    while (keep < items.length && keep < TILE_MAX && items[keep].size >= floor) keep++;
+    if (items.length - keep <= 1) return items;
+    let folded = 0;
+    for (let i = keep; i < items.length; i++) folded += items[i].size;
+    return items.slice(0, keep).concat([{
+      name: plural(items.length - keep, "smaller item"), size: folded, kind: "rest", smaller: true,
+    }]);
+  }
+
+  // What tapping an entry does, shared by the treemap and the table: open a
+  // folder, or expand whichever aggregate was tapped.
+  function activate(d) {
+    if (d.kind === "dir") navigate(rootIndex, segs.concat([d.name]));
+    else if (d.files) setShowFiles(true);
+    else if (d.smaller) { shown = items.length; renderTable(); $("#stor-tbl").scrollIntoView({ block: "nearest" }); }
+  }
+
+  async function navigate(root, path, keepShown) {
+    const token = ++navToken;
+    const rel = path.join("/");
+    const key = root + "/" + rel;
+    let l = listings.get(key);
+    if (!l) {
+      try {
+        const res = await fetch("/api/storage/dir?root=" + root + "&path=" + encodeURIComponent(rel));
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        l = await res.json();
+      } catch (err) {
+        if (token === navToken) $("#tm-focus").textContent = "Could not load that folder — try again.";
+        return;
+      }
+      if (listings.size >= LISTING_CACHE) listings.delete(listings.keys().next().value);
+      listings.set(key, l);
+    }
+    if (token !== navToken) return;
+    if (root !== rootIndex) renderRootBar(root);
+    rootIndex = root;
+    segs = l.path ? l.path.split("/") : [];
+    listing = l;
+    if (!keepShown) shown = PAGE;
+    drawView();
+    $("#tm-focus").textContent = l.partial
+      ? "That folder is gone or below the scan depth — showing the closest one that is still there."
+      : "Tap a block to drill in.";
   }
 
   // Pinned custom paths: bookmarks into the already-scanned tree, so adding one
-  // costs no server round trip and can never reach outside what was walked.
+  // can never reach outside what was walked.
   const PIN_KEY = "kanshi-pins";
   function loadPins() {
     try { return JSON.parse(localStorage.getItem(PIN_KEY)) || []; } catch (e) { return []; }
@@ -285,36 +369,15 @@
     return best;
   }
 
-  function resolvePin(pin) {
-    const idx = storage.roots.findIndex((r) => r.name === pin.root);
-    if (idx < 0) return null;
-    let node = storage.roots[idx];
-    const resTrail = [node];
-    for (const seg of pin.segs) {
-      const kids2 = node.children || [];
-      const hit = kids2.find((k) => k.name === seg);
-      if (!hit) break;
-      node = hit;
-      resTrail.push(node);
-    }
-    return { rootIndex: idx, trail: resTrail, complete: resTrail.length === pin.segs.length + 1 };
-  }
-
   function goToPin(pin) {
-    const res = resolvePin(pin);
-    if (!res) return;
-    rootIndex = res.rootIndex;
-    trail = res.trail;
-    drawStorage();
-    if (!res.complete) {
-      $("#tm-focus").textContent = "Landed as deep as the scan reaches — the rest is below the scan depth or folded away.";
-    }
+    const idx = storage.roots.findIndex((r) => r.name === pin.root);
+    if (idx >= 0) navigate(idx, pin.segs);
   }
 
   function removePin(pin) {
     pins = pins.filter((p) => !(p.root === pin.root && p.label === pin.label));
     savePins();
-    renderRootBar();
+    renderRootBar(rootIndex);
   }
 
   function flashPinError(msg) { $("#pinform-err").textContent = msg; }
@@ -329,7 +392,7 @@
       pins.push(pin);
       savePins();
     }
-    renderRootBar();
+    renderRootBar(rootIndex);
     goToPin(pin);
     hidePinForm();
   }
@@ -349,51 +412,57 @@
   $("#pinform-cancel").addEventListener("click", hidePinForm);
 
   function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  function renderRootBar() {
+  function renderRootBar(active) {
     const rootChips = storage.roots.map((r, i) =>
-      '<button role="tab" class="chip' + (i === rootIndex ? " is-on" : "") + '" data-i="' + i + '" type="button" aria-selected="' +
-      (i === rootIndex) + '">' + escapeHtml(r.name) + " · " + bytes(r.size) + "</button>").join("");
+      '<button role="tab" class="chip' + (i === active ? " is-on" : "") + '" data-root="' + i + '" type="button" aria-selected="' +
+      (i === active) + '">' + escapeHtml(r.name) + " · " + bytes(r.size) + "</button>").join("");
     const pinChips = pins.map((p, i) => {
       const label = escapeHtml(p.label);
-      return '<span class="chip pin" data-i="' + i + '">' +
+      return '<span class="chip pin" data-pin="' + i + '">' +
         '<button type="button" class="pin-go" title="' + label + '">' + label + "</button>" +
         '<button type="button" class="pin-x" aria-label="Remove pinned path">×</button></span>';
     }).join("");
     $("#rootbar").innerHTML = rootChips + pinChips +
-      '<button class="chip pin-add" id="pin-add" type="button">+ Add path</button>';
-    $("#rootbar").querySelectorAll("button.chip[data-i]").forEach((b) => {
-      b.addEventListener("click", () => { rootIndex = +b.dataset.i; trail = [storage.roots[rootIndex]]; drawStorage(); });
-    });
-    $("#rootbar").querySelectorAll(".chip.pin").forEach((span) => {
-      const pin = pins[+span.dataset.i];
-      span.querySelector(".pin-go").addEventListener("click", () => goToPin(pin));
-      span.querySelector(".pin-x").addEventListener("click", () => removePin(pin));
-    });
-    $("#pin-add").addEventListener("click", showPinForm);
+      '<button class="chip pin-add" data-add="1" type="button">+ Add path</button>';
   }
+
+  $("#rootbar").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button");
+    if (!b) return;
+    if (b.dataset.root) { navigate(+b.dataset.root, []); return; }
+    if (b.dataset.add) { showPinForm(); return; }
+    const pin = pins[+b.parentElement.dataset.pin];
+    if (!pin) return;
+    if (b.classList.contains("pin-x")) removePin(pin); else goToPin(pin);
+  });
 
   function renderCrumbs() {
-    const html = trail.map((n, i) => {
-      const last = i === trail.length - 1;
-      return '<button type="button" data-i="' + i + '"' + (last ? " disabled" : "") + ">" + n.name + "</button>" +
+    const names = [storage.roots[rootIndex].name].concat(segs);
+    $("#crumbs").innerHTML = names.map((n, i) => {
+      const last = i === names.length - 1;
+      return '<button type="button" data-depth="' + i + '"' + (last ? " disabled" : "") + ">" + escapeHtml(n) + "</button>" +
         (last ? "" : '<span class="sep">/</span>');
     }).join("");
-    $("#crumbs").innerHTML = html;
-    $("#crumbs").querySelectorAll("button").forEach((b) => {
-      b.addEventListener("click", () => { trail = trail.slice(0, +b.dataset.i + 1); drawStorage(); });
-    });
   }
 
+  $("#crumbs").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button");
+    if (b && !b.disabled) navigate(rootIndex, segs.slice(0, +b.dataset.depth));
+  });
+
   function emptyStorage(message) {
-    // The first walk can take the better part of a minute on a big filesystem.
-    // Say so, rather than leaving a blank box that reads as broken.
+    // The first walk can take a few minutes on a big filesystem. Say so,
+    // rather than leaving a blank box that reads as broken.
+    listing = null;
+    items = [];
     $("#rootbar").innerHTML = "";
     $("#crumbs").innerHTML = "";
-    $("#treemap").innerHTML = "";
+    svg.textContent = "";
     $("#stor-tbl").querySelector("tbody").innerHTML = "";
+    $("#stor-more").hidden = true;
     $("#tm-focus").textContent = message;
     $("#stor-meta").textContent = "";
   }
@@ -402,133 +471,162 @@
   // previous byte totals — so the server omits `progress` rather than
   // shipping a meaningless 0%. The bar only appears once there is a real
   // percentage to show.
-  function renderScanProgress() {
+  function renderScanStatus() {
     const bar = $("#scan-progress");
     const p = storage && storage.progress;
-    if (!storage || !storage.scanning || !p) { bar.hidden = true; return; }
-    bar.hidden = false;
-    $("#scan-progress-fill").style.width = Math.min(100, p.percent) + "%";
-    $("#scan-progress-label").textContent =
-      "Scanning " + p.root + "… " + p.percent.toFixed(0) + "% · " + bytes(p.bytes_done) + " of " + bytes(p.bytes_total);
-  }
-
-  function updateRescanButton() {
-    const btn = $("#rescan");
     const scanning = !!(storage && storage.scanning);
+    if (!scanning || !p) {
+      bar.hidden = true;
+    } else {
+      bar.hidden = false;
+      $("#scan-progress-fill").style.width = Math.min(100, p.percent) + "%";
+      $("#scan-progress-label").textContent =
+        "Scanning " + p.root + "… " + p.percent.toFixed(0) + "% · " + bytes(p.bytes_done) + " of " + bytes(p.bytes_total);
+    }
+    const btn = $("#rescan");
     btn.disabled = scanning;
     btn.textContent = scanning ? "Scanning…" : "Rescan";
+    renderMeta();
   }
 
-  function drawStorage() {
-    renderScanProgress();
-    updateRescanButton();
-    if (!storage || !storage.roots || !storage.roots.length) {
-      emptyStorage(storage && storage.error
-        ? "Scan failed: " + storage.error
-        : "Walking the filesystem for the first time — this can take a minute.");
-      return;
-    }
-    const node = current();
-    const kids = node.children || [];
-    renderCrumbs();
-
-    const box = svg.parentElement.getBoundingClientRect();
-    const width = Math.max(200, Math.round(box.width));
-    const height = treemapHeight(kids);
-    svg.style.height = height + "px";
-    svg.setAttribute("height", height);
-
-    Treemap.render(svg, kids, {
-      width: width, height: height, fmt: bytes,
-      onFocus: (d) => {
-        const share = node.size ? (d.size / node.size * 100).toFixed(1) : "0";
-        $("#tm-focus").textContent = d.name + " — " + bytes(d.size) + " (" + share + "% of " + node.name + ")";
-      },
-      onSelect: (d) => {
-        if (d.kind === "dir" && d.children && d.children.length) { trail.push(d); drawStorage(); }
-      },
-    });
-
-    // The table twin: every value in the map is reachable without colour or hover.
-    const rows = kids.slice().sort((a, b) => b.size - a.size).map((d) => {
-      const share = node.size ? (d.size / node.size * 100) : 0;
-      const drillable = d.kind === "dir" && d.children && d.children.length;
-      const glyph = d.kind === "dir" ? "▸" : d.kind === "file" ? "·" : "⋯";
-      return "<tr" + (drillable ? ' class="tap" data-name="' + encodeURIComponent(d.name) + '"' : "") + ">" +
-        '<td><div class="name-cell"><span class="g" aria-hidden="true">' + glyph + "</span><span>" + d.name + "</span></div></td>" +
-        '<td class="num">' + bytes(d.size) + "</td>" +
-        '<td class="num">' + share.toFixed(1) + "%</td></tr>";
-    });
-    const tbody = $("#stor-tbl").querySelector("tbody");
-    tbody.innerHTML = rows.join("") || '<tr><td colspan="3" class="muted">Empty</td></tr>';
-    tbody.querySelectorAll("tr.tap").forEach((tr) => {
-      tr.addEventListener("click", () => {
-        const name = decodeURIComponent(tr.dataset.name);
-        const hit = kids.find((k) => k.name === name);
-        if (hit) { trail.push(hit); drawStorage(); }
-      });
-    });
-
+  function renderMeta() {
+    if (!storage || !storage.roots || !storage.roots.length || !listing) return;
     const root = storage.roots[rootIndex];
     const warn = root.unreadable
-      ? " · ⚠ " + root.unreadable + " unreadable dir" + (root.unreadable === 1 ? "" : "s") + " not counted"
+      ? " · ⚠ " + plural(root.unreadable, "unreadable dir") + " not counted"
       : "";
     $("#stor-meta").textContent = "walked " + root.root + " in " + root.walk_seconds + "s · scanned " +
       ago(storage.scanned_at) + (storage.scanning ? " · rescanning…" : "") + warn;
   }
 
-  // While a walk is running the server updates its progress counters live, so
-  // poll every second instead of the normal 60s cadence — cheap, since /api/storage
-  // just reads counters rather than repeating any filesystem work. The chain
-  // stops itself the moment a poll comes back with scanning: false.
-  let scanPollTimer = null;
-  function scheduleScanPoll() {
-    clearTimeout(scanPollTimer);
-    scanPollTimer = setTimeout(async () => {
-      await loadStorage();
-      if (storage && storage.scanning) scheduleScanPoll();
-    }, 1000);
+  function drawTreemap() {
+    if (!listing) return;
+    const box = svg.parentElement.getBoundingClientRect();
+    const width = Math.max(200, Math.round(box.width));
+    const height = Math.round(parseFloat(getComputedStyle(svg).height)) || 300;
+    svg.setAttribute("height", height);
+    const total = listing.size;
+    Treemap.render(svg, tileItems(total), {
+      width: width, height: height, fmt: bytes,
+      onFocus: (d) => {
+        const share = total ? (d.size / total * 100).toFixed(1) : "0";
+        $("#tm-focus").textContent = d.name + " — " + bytes(d.size) + " (" + share + "% of " + currentName() + ")";
+      },
+      onSelect: activate,
+    });
+  }
+
+  // The table twin: every value in the map is reachable without colour or
+  // hover, and past the first page, without the treemap folding it away.
+  function renderTable() {
+    const total = listing.size;
+    const count = Math.min(shown, items.length);
+    let html = "";
+    for (let i = 0; i < count; i++) {
+      const d = items[i];
+      const share = total ? (d.size / total * 100) : 0;
+      const tappable = d.kind === "dir" || d.files;
+      const glyph = d.kind === "dir" ? "▸" : d.kind === "file" ? "·" : "⋯";
+      html += "<tr" + (tappable ? ' class="tap" data-i="' + i + '"' : "") + ">" +
+        '<td><div class="name-cell"><span class="g" aria-hidden="true">' + glyph + "</span><span>" +
+        escapeHtml(d.name) + "</span></div></td>" +
+        '<td class="num">' + bytes(d.size) + "</td>" +
+        '<td class="num">' + share.toFixed(1) + "%</td></tr>";
+    }
+    $("#stor-tbl").querySelector("tbody").innerHTML = html || '<tr><td colspan="3" class="muted">Empty</td></tr>';
+
+    const left = items.length - count;
+    $("#stor-more").hidden = items.length <= PAGE;
+    $("#stor-more-btn").hidden = left <= 0;
+    $("#stor-more-btn").textContent = "Show " + Math.min(MORE, left) + " more";
+    $("#stor-all-btn").hidden = left <= MORE;
+    $("#stor-all-btn").textContent = "Show all " + items.length;
+    $("#stor-less-btn").hidden = left > 0;
+    $("#stor-count").textContent = count + " of " + items.length;
+  }
+
+  $("#stor-tbl").querySelector("tbody").addEventListener("click", (ev) => {
+    const tr = ev.target.closest("tr.tap");
+    if (tr) activate(items[+tr.dataset.i]);
+  });
+  $("#stor-more-btn").addEventListener("click", () => { shown += MORE; renderTable(); });
+  $("#stor-all-btn").addEventListener("click", () => { shown = items.length; renderTable(); });
+  $("#stor-less-btn").addEventListener("click", () => {
+    shown = PAGE;
+    renderTable();
+    $("#stor-tbl").scrollIntoView({ block: "nearest" });
+  });
+
+  function renderFilesToggle() {
+    const chip = $("#show-files");
+    chip.classList.toggle("is-on", showFiles);
+    chip.setAttribute("aria-pressed", String(showFiles));
+  }
+  function setShowFiles(on) {
+    showFiles = on;
+    localStorage.setItem("kanshi-files", on ? "1" : "0");
+    renderFilesToggle();
+    if (listing) drawView();
+  }
+  $("#show-files").addEventListener("click", () => setShowFiles(!showFiles));
+  renderFilesToggle();
+
+  function drawView() {
+    items = viewItems();
+    renderCrumbs();
+    drawTreemap();
+    renderTable();
+    renderMeta();
   }
 
   async function loadStorage() {
-    try {
-      const res = await fetch("/api/storage");
-      storage = await res.json();
-      if (storage.scanning) scheduleScanPoll();
-      if (!storage.roots || !storage.roots.length) { drawStorage(); return; }
-      if (rootIndex >= storage.roots.length) rootIndex = 0;
-      // Re-anchor the current view onto the fresh tree so a background rescan
-      // doesn't kick the user back to the root while they're drilling around.
-      const names = trail.slice(1).map((n) => n.name);
-      trail = [storage.roots[rootIndex]];
-      for (const name of names) {
-        const kids = current().children || [];
-        const hit = kids.find((k) => k.name === name);
-        if (!hit) break;
-        trail.push(hit);
-      }
-      renderRootBar();
-      drawStorage();
-    } catch (err) { /* keep the previous render */ }
+    let snap;
+    try { snap = await (await fetch("/api/storage")).json(); } catch (err) { return; }
+    storage = snap;
+    renderScanStatus();
+    if (!snap.roots || !snap.roots.length) {
+      emptyStorage(snap.error
+        ? "Scan failed: " + snap.error
+        : "Walking the filesystem for the first time — this can take a few minutes.");
+      return;
+    }
+    if (snap.scanned_at !== scanStamp) { scanStamp = snap.scanned_at; listings.clear(); }
+    if (rootIndex >= snap.roots.length) { rootIndex = 0; segs = []; }
+    renderRootBar(rootIndex);
+    // Re-open the same folder on the fresh walk, so a background rescan
+    // doesn't kick the user back to the root while they're drilling around.
+    await navigate(rootIndex, segs, true);
   }
 
-  // The rescan endpoint now starts the walk in the background and returns
-  // immediately (a full walk can run well over a minute), so the button just
-  // kicks it off and lets the 1s poll loop above carry the live percentage —
-  // it does not wait for the walk to finish.
+  // Every live frame carries the scan status, so the progress bar moves without
+  // any polling, and the map itself is only refetched once a walk completes.
+  function onScanStatus(st) {
+    if (!storage) return;   // the first load is still in flight and will carry this
+    const finished = st.scanned_at !== storage.scanned_at || (st.error || null) !== (storage.error || null);
+    storage.scanning = st.scanning;
+    storage.progress = st.progress;
+    storage.error = st.error;
+    renderScanStatus();
+    if (finished) loadStorage();
+  }
+
+  // The rescan endpoint starts the walk in the background and returns at once
+  // (a full walk can run for minutes); the live stream carries it from there.
   $("#rescan").addEventListener("click", async () => {
-    try { await fetch("/api/storage/rescan", { method: "POST" }); } catch (err) { /* next poll retries */ }
-    await loadStorage();
+    try {
+      const res = await fetch("/api/storage/rescan", { method: "POST" });
+      onScanStatus(await res.json());
+    } catch (err) { /* the next frame will say where things stand */ }
   });
 
   let resizeTimer;
   new ResizeObserver(() => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(drawStorage, 120);
+    resizeTimer = setTimeout(drawTreemap, 120);
   }).observe(svg.parentElement);
 
   /* ── live stream ────────────────────────────────────────────────────── */
-  let source = null, retry = 1000;
+  let source = null, retry = 1000, retryTimer = null;
   function setConn(state, text) {
     const el = $("#conn");
     el.className = "conn " + state;
@@ -536,8 +634,14 @@
     document.body.classList.toggle("is-stale", state !== "live");
   }
 
+  function disconnect() {
+    clearTimeout(retryTimer);
+    if (source) { source.close(); source = null; }
+  }
+
   function connect() {
-    if (source) source.close();
+    disconnect();
+    if (document.hidden) return;
     source = new EventSource("/api/stream");
     source.onopen = () => { retry = 1000; setConn("live", "live"); };
     source.onmessage = (ev) => {
@@ -551,18 +655,24 @@
         $("#foot-meta").textContent = "updated " + new Date().toLocaleTimeString();
       }
       if (payload.docker) renderContainers(payload.docker);
+      if (payload.storage) onScanStatus(payload.storage);
     };
     source.onerror = () => {
       setConn("down", "reconnecting");
-      source.close();
-      setTimeout(connect, retry);
+      disconnect();
+      retryTimer = setTimeout(connect, retry);
       retry = Math.min(retry * 2, 15000);   // back off instead of hammering
     };
   }
 
-  // A phone suspends the page on lock; reconnect and refresh the moment it returns.
+  // A background tab drops its stream, so once nobody is looking the server's
+  // poller goes idle and stops touching /proc and the Docker socket entirely.
+  // A phone suspends the page on lock anyway; either way, reconnect and
+  // refresh the moment it is visible again.
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") { connect(); loadStorage(); }
+    if (document.hidden) { disconnect(); setConn("down", "paused"); return; }
+    connect();
+    loadStorage();
   });
 
   /* ── theme toggle ───────────────────────────────────────────────────── */
@@ -574,10 +684,8 @@
     const next = now === "dark" ? "light" : now === "light" ? "dark" : (prefersDark ? "light" : "dark");
     document.documentElement.dataset.theme = next;
     localStorage.setItem("kanshi-theme", next);
-    drawStorage();
   });
 
   connect();
   loadStorage();
-  setInterval(loadStorage, 60000);   // cheap: the server serves a cached tree
 })();

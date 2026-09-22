@@ -104,7 +104,8 @@ environment.
 | `KANSHI_STORAGE_ROOTS` | `/=/hostfs,/mnt/data=/mnt/data` | `label=path` pairs for the storage map |
 | `KANSHI_STORAGE_INTERVAL` | `1800` | Seconds between disk walks |
 | `KANSHI_STORAGE_EXCLUDE` | *(empty)* | Comma-separated paths to skip, container-side |
-| `KANSHI_TREE_DEPTH` | `4` | Treemap depth kept after the walk |
+| `KANSHI_STORAGE_CPU` | `25` | Share of one core, in %, the walk may average; `100` turns the throttle off |
+| `KANSHI_TREE_DEPTH` | `4` | Folder depth you can drill into; deeper bytes roll up into their ancestor |
 | `KANSHI_WEB_DIR` | *(embedded)* | Serve `web/` from disk instead of the binary |
 
 The walk of `/` is the slowest thing here, dominated by ~100k overlay2 files.
@@ -137,7 +138,7 @@ KANSHI_STORAGE_EXCLUDE=/hostfs/var/lib/docker
 
 - 📊 **Processor** — hero utilisation %, per-core bars, load average, temperature, host net/disk throughput
 - 🧠 **Memory & volumes** — RAM, swap, and one meter per storage root
-- 🗺 **Storage map** — squarified treemap you can tap to drill into, with a table twin below; depth-bounded so it stays fast on large filesystems
+- 🗺 **Storage map** — squarified treemap you can tap to drill into, with a table twin below that lists every folder (show more / show all) and, on request, the largest files; depth-bounded so it stays fast on large filesystems
 - 🐳 **Containers** — per-container CPU%, memory, network rate and health straight from the Docker Engine API, plus each published `host → internal` port mapping as a link that opens on whatever address you reached the dashboard at
 - ⚡ **One SSE connection** — the server pushes every tick over `/api/stream`; nothing polls, nothing needs a manual reload
 - 😴 **Idles to near-zero** — the poller and the Docker socket both go quiet after `KANSHI_IDLE_TIMEOUT` with nobody watching
@@ -161,12 +162,17 @@ KANSHI_STORAGE_EXCLUDE=/hostfs/var/lib/docker
 |---|---|---|
 | Processor — hero %, per-core bars, load, temp, host net/disk throughput | `/proc/stat`, `/proc/net/dev`, `/proc/diskstats`, `/sys` hwmon | every `KANSHI_POLL_INTERVAL` |
 | Memory & volumes — RAM, swap, one meter per storage root | `/proc/meminfo` + `statfs(2)` | same tick |
-| Storage map — squarified treemap, tap to drill, table twin below | cached `getdents`+`lstat` walk | every `KANSHI_STORAGE_INTERVAL`, or the Rescan button |
+| Storage map — squarified treemap, tap to drill, table twin below | cached breadth-first `getdents`+`fstatat` walk | every `KANSHI_STORAGE_INTERVAL`, or the Rescan button |
 | Containers — CPU%, memory, network rates, health, port mappings | Docker Engine API | same tick |
 
 The browser holds **one SSE connection** (`/api/stream`) and the server pushes
-each tick. There is also a plain REST surface: `/api/vitals`,
-`/api/containers`, `/api/storage`, `POST /api/storage/rescan`, `/healthz`.
+each tick, including the storage scan's status and progress. The storage map
+itself is never pushed: `/api/storage` is one summary line per root, and each
+folder is fetched from `/api/storage/dir?root=0&path=home/yuuki` as it is
+opened, answered from the cached walk without touching the disk. A background
+tab drops its stream, so the server idles while nobody is looking. The rest of
+the REST surface is `/api/vitals`, `/api/containers`,
+`POST /api/storage/rescan`, `/healthz`.
 
 ## Building
 
@@ -204,18 +210,32 @@ measured at **8.3s per tick** across 31 containers. Kanshi uses `one-shot=true`
 (**0.07s**) and computes CPU% against the previous tick itself. Same arithmetic,
 and a 5s window is steadier to read than the daemon's 1s one.
 
-**The disk walk is depth-bounded.** The tree is pruned to `KANSHI_TREE_DEPTH`
-before it is served, so the walk only materialises a node for directories within
-that depth — ~2.3k instead of ~96k on this host. Deeper directories are still
+**The disk walk is breadth-first and depth-bounded.** It goes one level at a
+time, so the folders you can drill into are all finished before the deep, bulky
+part of the tree starts. Only directories within `KANSHI_TREE_DEPTH` get a node
+of their own — ~2.3k instead of ~96k on this host. Deeper directories are still
 fully traversed and counted; their bytes roll up into the nearest kept ancestor.
 Sizes come from `st_blocks` (so they match `du`, not apparent size) and
 hardlinked files are counted once.
 
-**The walk runs at `nice 10`** on a locked, dedicated OS thread — Linux applies
-`setpriority(PRIO_PROCESS)` per thread, and the runtime retires that thread when
-the walk ends rather than handing a niced thread back to the poller. A full pass
-over `/` takes ~76s on a cold cache, and the live cards keep their exact 5s
-cadence throughout.
+**The walk barely allocates.** Directory entries are parsed straight out of the
+`getdents64` buffer and stat'ed with `fstatat` relative to the open directory,
+so the kernel resolves one path component rather than the whole path, and no
+string is built per file. Each BFS level's paths are packed into one buffer.
+Compared with the previous depth-first walk this uses ~30% less CPU and ~5× fewer
+garbage collections. The trade-off is that a whole level is queued at once,
+which raises the walk's peak memory by a few MB. The heap goes back to the OS as
+soon as the walk ends.
+
+**The walk is throttled and runs at `nice 19`.** It runs on a locked, dedicated OS
+thread with the lowest best-effort I/O priority. Linux applies both settings per
+thread, and the runtime retires that thread when the walk ends rather than
+handing it back to the poller. `nice` only matters when something else wants the
+CPU, so the walk also measures its own thread's CPU time and sleeps between
+directories to average `KANSHI_STORAGE_CPU` (25% of one core by default). Time
+spent waiting on the disk counts as idle. On a warm cache that makes a pass
+about 4× longer but never more than a quarter of a core; on a cold cache the
+disk is the bottleneck anyway.
 
 **Unreadable directories are reported, not hidden.** If the walk cannot enter a
 directory it is counted and the storage card says so — a silently truncated tree

@@ -66,16 +66,25 @@
       <svg id="treemap" role="img" aria-labelledby="stor-h" preserveAspectRatio="none"></svg>
     </div>
     <p id="tm-focus" class="focusline muted small" aria-live="polite">Tap a block to drill in.</p>
-    <ul class="legend">
-      <li><span class="g">▸</span>folder</li>
-      <li><span class="g">·</span>file</li>
-      <li><span class="g">⋯</span>aggregated</li>
-    </ul>
+    <div class="tm-bar">
+      <ul class="legend">
+        <li><span class="g">▸</span>folder</li>
+        <li><span class="g">·</span>file</li>
+        <li><span class="g">⋯</span>aggregated</li>
+      </ul>
+      <button class="chip" id="show-files" type="button" aria-pressed="false">Show files</button>
+    </div>
     <table class="tbl" id="stor-tbl">
       <caption class="visually-hidden">Contents of the selected directory by size</caption>
       <thead><tr><th scope="col">Name</th><th scope="col" class="num">Size</th><th scope="col" class="num">Share</th></tr></thead>
       <tbody></tbody>
     </table>
+    <div class="more" id="stor-more" hidden>
+      <span class="muted small" id="stor-count"></span>
+      <button class="btn" id="stor-more-btn" type="button">Show more</button>
+      <button class="btn" id="stor-all-btn" type="button">Show all</button>
+      <button class="btn btn-quiet" id="stor-less-btn" type="button">Show fewer</button>
+    </div>
     <p id="stor-meta" class="muted small"></p>
   </section>
 

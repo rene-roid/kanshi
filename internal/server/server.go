@@ -20,11 +20,14 @@ import (
 )
 
 // Frame is one push to the browser. Vitals and Docker are explicit nulls
-// rather than omitted, because app.js tests each for truthiness.
+// rather than omitted, because app.js tests each for truthiness. Storage is
+// only the scan status: the page refetches the storage map itself when the
+// scan timestamp moves, so nothing polls for it.
 type Frame struct {
-	Vitals *vitals.Sample      `json:"vitals"`
-	Docker *dockerstats.Result `json:"docker"`
-	Error  string              `json:"error,omitempty"`
+	Vitals  *vitals.Sample      `json:"vitals"`
+	Docker  *dockerstats.Result `json:"docker"`
+	Storage *storage.Status     `json:"storage"`
+	Error   string              `json:"error,omitempty"`
 }
 
 // Server holds the shared state the poller writes and the handlers read.
@@ -82,7 +85,8 @@ func (s *Server) sampleOnce(ctx context.Context) Frame {
 	containers = s.docker.Sample(ctx)
 	wg.Wait()
 
-	frame := Frame{Vitals: &host, Docker: &containers}
+	scan := s.storage.Status()
+	frame := Frame{Vitals: &host, Docker: &containers, Storage: &scan}
 	s.mu.Lock()
 	s.latest = frame
 	s.mu.Unlock()
@@ -187,6 +191,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/containers", s.handleContainers)
 	mux.HandleFunc("/api/storage", s.handleStorage)
 	mux.HandleFunc("/api/storage/rescan", s.handleRescan)
+	mux.HandleFunc("/api/storage/dir", s.handleStorageDir)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/stream", s.handleStream)
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -227,12 +232,29 @@ func (s *Server) handleStorage(w http.ResponseWriter, _ *http.Request) {
 	snap := s.storage.Snapshot()
 	// The very first request arrives before the background loop has finished
 	// its opening walk. Kick one off and return immediately rather than
-	// blocking the request for the walk's full length — the browser polls
-	// this same endpoint and renders the live percentage as it comes in.
+	// blocking the request for the walk's full length — the live stream
+	// carries the percentage from here on.
 	if snap.ScannedAt == nil && !snap.Scanning {
 		snap = s.storage.ScanAsync(s.base, true)
 	}
 	writeJSON(w, snap)
+}
+
+// handleStorageDir serves one directory of the cached walk:
+// /api/storage/dir?root=0&path=home/yuuki. It never touches the disk.
+func (s *Server) handleStorageDir(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	root, err := strconv.Atoi(q.Get("root"))
+	if err != nil {
+		http.Error(w, "bad root", http.StatusBadRequest)
+		return
+	}
+	listing, ok := s.storage.List(root, q.Get("path"))
+	if !ok {
+		http.Error(w, "no such root", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, listing)
 }
 
 func (s *Server) handleRescan(w http.ResponseWriter, _ *http.Request) {
