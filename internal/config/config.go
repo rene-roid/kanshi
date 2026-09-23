@@ -1,18 +1,36 @@
-// Package config holds runtime configuration, all via environment variables.
+// Package config holds runtime configuration.
 //
-// Defaults are deliberately conservative: this box has 4 cores and ~28 other
-// containers, so Kanshi should be invisible in `docker stats`.
+// Every setting is an environment variable. The same KEY=VALUE pairs can also
+// live in an optional kanshi.env file, which is what makes a double-clicked
+// Windows executable configurable at all. A handful of settings also have a
+// command-line flag. Precedence is flag, then environment, then file, then the
+// built-in default.
+//
+// Defaults are deliberately conservative: the box this was written for has 4
+// cores and ~28 other containers, so Kanshi should be invisible in `docker stats`.
 package config
 
 import (
 	"os"
-	"path"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// Config is read once at startup and never mutated, so it needs no locking.
+// Source says where a setting's value came from. The dashboard only lets you
+// change the access mode when it is not pinned by a flag or the environment,
+// because a change there would be silently overridden on the next start.
+type Source string
+
+const (
+	SourceDefault Source = "default"
+	SourceFile    Source = "file"
+	SourceEnv     Source = "env"
+	SourceFlag    Source = "flag"
+)
+
+// Config is read once at startup. Only the access mode changes afterwards, and
+// that is owned by the server, not this struct.
 type Config struct {
 	// How often the live poller samples vitals + container stats.
 	PollInterval time.Duration
@@ -20,15 +38,16 @@ type Config struct {
 	// Nobody is looking, so there is no reason to keep waking the Docker daemon.
 	IdleTimeout time.Duration
 
-	// Max concurrent /stats requests against the Docker socket per tick.
+	// Max concurrent /stats requests against the Docker daemon per tick.
 	DockerConcurrency int
-	DockerSocket      string
+	// A DOCKER_HOST-style address: unix://, npipe:// or tcp://.
+	DockerHost string
 
-	// Storage walk. Roots are "label=path" or just "path".
+	// Storage walk. Entries are "auto", "label=path" or just "path".
 	StorageRoots    []string
 	StorageInterval time.Duration
-	// Absolute container-side paths to skip entirely. Their bytes vanish from
-	// the totals, so only exclude things you truly don't want counted.
+	// Paths to skip entirely. Their bytes vanish from the totals, so only
+	// exclude things you truly don't want counted.
 	StorageExclude   []string
 	StorageMinRescan time.Duration
 	// Share of one core, in percent, the walk may average. It sleeps between
@@ -39,93 +58,172 @@ type Config struct {
 	// roll up into the nearest ancestor that does.
 	TreeDepth int
 
-	Host string
-	Port int
+	// Where the host's root filesystem is mounted when Kanshi runs in a
+	// container. Empty on a bare-metal install.
+	HostRoot string
+
+	// Who can reach the dashboard: "local", "lan", "tailscale", "all", or a
+	// comma-separated mix, plus explicit addresses. Parsed by package access.
+	Access       string
+	AccessSource Source
+	Port         int
+
+	// The kanshi.env that was loaded, or where one would be written if the
+	// access mode is changed from the dashboard. Empty when there is nowhere
+	// sensible to write, such as a read-only container.
+	File       string
+	FileLoaded bool
 
 	// Serve web assets from this directory instead of the ones baked into the
 	// binary. Only useful when iterating on the frontend.
 	WebDir string
 }
 
-// Root is one labelled entry from StorageRoots.
-type Root struct {
-	Label string
-	Path  string
+// Flags are the command-line overrides. A zero value means "not given".
+type Flags struct {
+	Access string
+	Port   int
+	File   string
 }
 
-// Roots expands the "label=path" entries. A bare path is labelled with its
-// own basename.
-func (c Config) Roots() []Root {
-	out := make([]Root, 0, len(c.StorageRoots))
-	for _, entry := range c.StorageRoots {
-		label, p, found := strings.Cut(entry, "=")
-		if !found || p == "" {
-			p = label
-			if base := path.Base(strings.TrimRight(label, "/")); base != "" && base != "." {
-				label = base
-			}
-		}
-		out = append(out, Root{Label: label, Path: p})
+// Load reads flags, environment and kanshi.env. Unparseable values fall back
+// to the default rather than refusing to start — a typo in one knob should not
+// take the dashboard down.
+func Load(flags Flags) Config {
+	path, loaded := findFile(flags.File)
+	var file map[string]string
+	if loaded {
+		file, _ = ReadFile(path)
 	}
-	return out
-}
+	l := lookup{file: file}
 
-// Load reads the environment. Unparseable values fall back to the default
-// rather than refusing to start — a typo in one knob should not take the
-// dashboard down.
-func Load() Config {
+	access, accessSrc := l.access(flags.Access)
+	port := l.int("KANSHI_PORT", 8100)
+	if flags.Port > 0 {
+		port = flags.Port
+	}
+
 	return Config{
-		PollInterval:      envSeconds("KANSHI_POLL_INTERVAL", 5*time.Second),
-		IdleTimeout:       envSeconds("KANSHI_IDLE_TIMEOUT", 30*time.Second),
-		DockerConcurrency: envInt("KANSHI_DOCKER_CONCURRENCY", 8),
-		DockerSocket:      envString("KANSHI_DOCKER_SOCKET", "/var/run/docker.sock"),
-		StorageRoots:      envList("KANSHI_STORAGE_ROOTS", "/=/hostfs,/mnt/data=/mnt/data"),
-		StorageInterval:   envSeconds("KANSHI_STORAGE_INTERVAL", 1800*time.Second),
-		StorageExclude:    envList("KANSHI_STORAGE_EXCLUDE", ""),
-		StorageMinRescan:  envSeconds("KANSHI_STORAGE_MIN_RESCAN", 30*time.Second),
-		StorageCPU:        envFloat("KANSHI_STORAGE_CPU", 25),
-		TreeDepth:         envInt("KANSHI_TREE_DEPTH", 4),
-		Host:              envString("KANSHI_HOST", "0.0.0.0"),
-		Port:              envInt("KANSHI_PORT", 8100),
-		WebDir:            envString("KANSHI_WEB_DIR", ""),
+		PollInterval:      l.seconds("KANSHI_POLL_INTERVAL", 5*time.Second),
+		IdleTimeout:       l.seconds("KANSHI_IDLE_TIMEOUT", 30*time.Second),
+		DockerConcurrency: l.int("KANSHI_DOCKER_CONCURRENCY", 8),
+		DockerHost:        l.dockerHost(),
+		StorageRoots:      l.list("KANSHI_STORAGE_ROOTS", "auto"),
+		StorageInterval:   l.seconds("KANSHI_STORAGE_INTERVAL", 1800*time.Second),
+		StorageExclude:    l.list("KANSHI_STORAGE_EXCLUDE", ""),
+		StorageMinRescan:  l.seconds("KANSHI_STORAGE_MIN_RESCAN", 30*time.Second),
+		StorageCPU:        l.float("KANSHI_STORAGE_CPU", 25),
+		TreeDepth:         l.int("KANSHI_TREE_DEPTH", 4),
+		HostRoot:          strings.TrimRight(l.string("KANSHI_HOST_ROOT", ""), `/\`),
+		Access:            access,
+		AccessSource:      accessSrc,
+		Port:              port,
+		File:              path,
+		FileLoaded:        loaded,
+		WebDir:            l.string("KANSHI_WEB_DIR", ""),
 	}
 }
 
-func envString(name, def string) string {
-	if v := os.Getenv(name); v != "" {
+// lookup resolves one setting against the environment, then the file.
+type lookup struct {
+	file map[string]string
+}
+
+func (l lookup) get(name string) (string, Source) {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v, SourceEnv
+	}
+	if v := strings.TrimSpace(l.file[name]); v != "" {
+		return v, SourceFile
+	}
+	return "", SourceDefault
+}
+
+// access resolves the access mode. KANSHI_HOST is the setting this replaced;
+// it is still honoured, one level below KANSHI_ACCESS from the same source, so
+// an existing .env keeps meaning what it meant.
+func (l lookup) access(flag string) (string, Source) {
+	if flag != "" {
+		return flag, SourceFlag
+	}
+	if v := strings.TrimSpace(os.Getenv("KANSHI_ACCESS")); v != "" {
+		return v, SourceEnv
+	}
+	if v := strings.TrimSpace(os.Getenv("KANSHI_HOST")); v != "" {
+		return hostToAccess(v), SourceEnv
+	}
+	if v := strings.TrimSpace(l.file["KANSHI_ACCESS"]); v != "" {
+		return v, SourceFile
+	}
+	if v := strings.TrimSpace(l.file["KANSHI_HOST"]); v != "" {
+		return hostToAccess(v), SourceFile
+	}
+	return "local", SourceDefault
+}
+
+func hostToAccess(host string) string {
+	switch host {
+	case "0.0.0.0", "::", "[::]", "*":
+		return "all"
+	case "127.0.0.1", "localhost", "::1", "[::1]":
+		return "local"
+	}
+	return host
+}
+
+// dockerHost honours DOCKER_HOST like the docker CLI does, then the older
+// KANSHI_DOCKER_SOCKET (a bare socket path), then the platform default.
+func (l lookup) dockerHost() string {
+	if v, _ := l.get("DOCKER_HOST"); v != "" {
+		return v
+	}
+	if v, _ := l.get("KANSHI_DOCKER_SOCKET"); v != "" {
+		if strings.Contains(v, "://") {
+			return v
+		}
+		return "unix://" + v
+	}
+	return defaultDockerHost
+}
+
+func (l lookup) string(name, def string) string {
+	if v, _ := l.get(name); v != "" {
 		return v
 	}
 	return def
 }
 
-func envInt(name string, def int) int {
-	v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+func (l lookup) int(name string, def int) int {
+	v, _ := l.get(name)
+	n, err := strconv.Atoi(v)
 	if err != nil {
 		return def
 	}
-	return v
+	return n
 }
 
-func envFloat(name string, def float64) float64 {
-	v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(name)), 64)
+func (l lookup) float(name string, def float64) float64 {
+	v, _ := l.get(name)
+	n, err := strconv.ParseFloat(v, 64)
 	if err != nil {
 		return def
 	}
-	return v
+	return n
 }
 
-// envSeconds accepts a bare number of seconds, matching the Compose file's
-// plain integers.
-func envSeconds(name string, def time.Duration) time.Duration {
-	v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(name)), 64)
-	if err != nil || v <= 0 {
+// seconds accepts a bare number of seconds, matching the Compose file's plain
+// integers.
+func (l lookup) seconds(name string, def time.Duration) time.Duration {
+	v, _ := l.get(name)
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil || n <= 0 {
 		return def
 	}
-	return time.Duration(v * float64(time.Second))
+	return time.Duration(n * float64(time.Second))
 }
 
-func envList(name, def string) []string {
-	raw := os.Getenv(name)
+func (l lookup) list(name, def string) []string {
+	raw, _ := l.get(name)
 	if raw == "" {
 		raw = def
 	}

@@ -1,4 +1,5 @@
-// Package dockerstats talks to the Docker Engine API over its unix socket.
+// Package dockerstats talks to the Docker Engine API over its unix socket, or
+// the named pipe Docker Desktop uses on Windows.
 //
 // It uses `GET /containers/{id}/stats?stream=false&one-shot=true`. The one-shot
 // form returns immediately; without it the daemon blocks each request for a
@@ -14,6 +15,7 @@ package dockerstats
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -22,15 +24,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yuuki824/kanshi/internal/config"
+	"github.com/rene-roid/kanshi/internal/config"
 )
 
 // Pinned rather than negotiated: every field Kanshi reads has been stable
 // since 1.43, and asking for a version the daemon predates is a hard error.
 const apiVersion = "v1.43"
 
-// Client holds the socket transport and the previous tick's counters. Every
-// rate here is a delta, so the client has to outlive a single sample.
+// When the daemon is not there at all — no socket, no pipe, connection
+// refused — it is only looked for again after this long. A laptop without
+// Docker should not pay for a failed connect every few seconds.
+const retryAbsent = time.Minute
+
+// Client holds the transport and the previous tick's counters. Every rate
+// here is a delta, so the client has to outlive a single sample.
 type Client struct {
 	cfg  config.Config
 	http *http.Client
@@ -38,6 +45,9 @@ type Client struct {
 	mu      sync.Mutex
 	prevCPU map[string]cpuCounters
 	prevNet map[string]netCounters
+	// absentUntil and absent hold the "no daemon" answer between retries.
+	absentUntil time.Time
+	absent      Result
 }
 
 type cpuCounters struct{ total, system uint64 }
@@ -47,15 +57,17 @@ type netCounters struct {
 }
 
 func New(cfg config.Config) *Client {
-	socket := cfg.DockerSocket
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	dial, err := dialer(cfg.DockerHost)
+	if err != nil {
+		dial = func(context.Context) (net.Conn, error) { return nil, &net.OpError{Op: "dial", Err: err} }
+	}
 	return &Client{
 		cfg: cfg,
 		http: &http.Client{
 			Timeout: 20 * time.Second,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					return dialer.DialContext(ctx, "unix", socket)
+					return dial(ctx)
 				},
 				// One idle connection per in-flight request, so a tick reuses
 				// the sockets the previous tick opened instead of paying a
@@ -147,12 +159,14 @@ type statsJSON struct {
 /* ── wire payload ───────────────────────────────────────────────────────── */
 
 // Result is the JSON the browser consumes; field names are part of the wire
-// contract with web/app.js.
+// contract with web/app.js. Unavailable means no daemon could be reached at
+// all, which the page shows as "Docker not detected" rather than an error.
 type Result struct {
-	Containers []Container `json:"containers"`
-	Running    int         `json:"running"`
-	Total      int         `json:"total"`
-	Error      string      `json:"error,omitempty"`
+	Containers  []Container `json:"containers"`
+	Running     int         `json:"running"`
+	Total       int         `json:"total"`
+	Error       string      `json:"error,omitempty"`
+	Unavailable bool        `json:"unavailable,omitempty"`
 }
 
 type Container struct {
@@ -448,9 +462,24 @@ func (c *Client) one(ctx context.Context, meta containerMeta) *Container {
 // Sample runs one full pass: list containers, then fetch stats for the running
 // ones concurrently.
 func (c *Client) Sample(ctx context.Context) Result {
+	c.mu.Lock()
+	if time.Now().Before(c.absentUntil) {
+		r := c.absent
+		c.mu.Unlock()
+		return r
+	}
+	c.mu.Unlock()
+
 	var listing []containerMeta
 	if err := c.get(ctx, "/containers/json?all=true", &listing); err != nil {
-		return Result{Error: errString(err), Containers: []Container{}}
+		r := Result{Error: errString(err), Containers: []Container{}}
+		if absent(err) {
+			r.Unavailable = true
+			c.mu.Lock()
+			c.absent, c.absentUntil = r, time.Now().Add(retryAbsent)
+			c.mu.Unlock()
+		}
+		return r
 	}
 
 	var running []containerMeta
@@ -581,6 +610,13 @@ func equalFold(a, b string) bool {
 		}
 	}
 	return true
+}
+
+// absent reports a failure to reach any daemon at all, as opposed to one that
+// answered badly.
+func absent(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
 }
 
 // errString keeps the "Type: message" shape the dashboard already renders for

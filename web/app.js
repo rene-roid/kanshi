@@ -13,6 +13,9 @@
     el.innerHTML = html;
   }
   const KB = 1024;
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
 
   /* ── formatting ─────────────────────────────────────────────────────── */
   function bytes(n) {
@@ -61,11 +64,13 @@
     const hot = cpu.temp !== null && cpu.temp !== undefined;
     $("#cpu-meta").textContent = cpu.count + " cores" + (hot ? " · " + cpu.temp + "°C" : "");
 
+    // Windows keeps no load average, so the row is left out rather than
+    // showing three zeros that look like a measurement.
     const aux = [
-      ["Load avg", cpu.load.map((n) => n.toFixed(2)).join("  ")],
+      cpu.load ? ["Load avg", cpu.load.map((n) => n.toFixed(2)).join("  ")] : null,
       ["Net", "↓" + shortRate(v.network.rx) + "  ↑" + shortRate(v.network.tx)],
       ["Disk", "↓" + shortRate(v.diskio.read) + "  ↑" + shortRate(v.diskio.write)],
-    ];
+    ].filter(Boolean);
     setHTML($("#cpu-aux"), aux.map((r) => "<dt>" + r[0] + "</dt><dd>" + r[1] + "</dd>").join(""));
 
     const host = $("#cores");
@@ -105,7 +110,7 @@
       parts.push(meter("Swap", v.swap.percent, bytes(v.swap.used) + " of " + bytes(v.swap.total), 50, 80));
     }
     v.filesystems.forEach((fs) => {
-      parts.push(meter(fs.label, fs.percent, bytes(fs.free) + " free", 80, 92));
+      parts.push(meter(escapeHtml(fs.label), fs.percent, bytes(fs.free) + " free", 80, 92));
     });
     setHTML($("#meters"), parts.join(""));
   }
@@ -195,9 +200,53 @@
     return '<span class="pq"' + (hint ? ' title="' + hint + '"' : "") + ">" + label + "</span>";
   }
 
+  // One row per container, kept across ticks and updated in place. A tick
+  // changes a few numbers per row; rewriting the whole table every five
+  // seconds would reparse and relayout thirty rows for that.
+  const ctrRows = new Map();   // id → { tr, head, bar, cpu, mem, net }
+
+  function ctrRow() {
+    const tr = document.createElement("tr");
+    tr.innerHTML = '<td><div class="ctr-head"></div><div class="ctr-bar"><i></i></div></td>' +
+      '<td class="num"></td><td class="num"></td><td class="num"></td>';
+    return { tr: tr, head: tr.querySelector(".ctr-head"), bar: tr.querySelector(".ctr-bar i"),
+      cpu: tr.cells[1], mem: tr.cells[2], net: tr.cells[3] };
+  }
+  function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+
+  function fillRow(row, c) {
+    const running = c.state === "running";
+    const bad = c.health === "unhealthy" || (!running && c.state !== "exited");
+    const dot = bad ? "bad" : running ? "run" : "stop";
+    // Project first in the sub-line: it is the shared prefix, so it belongs
+    // where it can be skimmed past rather than eating the name column.
+    const sub = [c.project, running ? c.status : c.state + " · " + c.status].filter(Boolean).join(" · ");
+    setHTML(row.head, '<div class="name-cell"><i class="dot ' + dot + '"></i><span class="ctr-name">' +
+      escapeHtml(c.name) + '</span></div><div class="ctr-sub">' + escapeHtml(sub) + "</div>" + portLine(c));
+    // Bar width is capped at one full core so a 300% spike stays readable.
+    const width = Math.min(100, c.cpu) + "%";
+    if (row.bar.style.width !== width) row.bar.style.width = width;
+    setText(row.cpu, running ? c.cpu.toFixed(1) + "%" : "—");
+    setText(row.mem, running ? bytes(c.mem_used) : "—");
+    setText(row.net, c.net ? "↓" + shortRate(c.net.rx_rate) + " ↑" + shortRate(c.net.tx_rate) : (running ? "shared" : "—"));
+    const cls = running ? "" : "is-stopped";
+    if (row.tr.className !== cls) row.tr.className = cls;
+    const title = c.full_name || c.name;
+    if (row.tr.title !== title) row.tr.title = title;
+  }
+
   function renderContainers(d) {
     lastDocker = d;
     if (!d) return;
+    // No daemon at all (a laptop without Docker) is not an error, just
+    // nothing to show.
+    $("#ctr-empty").hidden = !d.unavailable;
+    $(".sortbar").hidden = !!d.unavailable;
+    $("#ctr-tbl").hidden = !!d.unavailable;
+    if (d.unavailable) {
+      $("#ctr-meta").textContent = "not detected";
+      return;
+    }
     if (d.error) {
       $("#ctr-meta").textContent = "docker: " + d.error;
       return;
@@ -213,30 +262,19 @@
 
     $("#ctr-meta").textContent = d.running + " running · " + d.total + " total";
 
-    const rows = list.map((c) => {
-      const running = c.state === "running";
-      const bad = c.health === "unhealthy" || (!running && c.state !== "exited");
-      const dot = bad ? "bad" : running ? "run" : "stop";
-      // Bar width is capped at one full core so a 300% spike stays readable.
-      const barPct = Math.min(100, c.cpu);
-      const mem = running ? bytes(c.mem_used) : "—";
-      const net = c.net ? "↓" + shortRate(c.net.rx_rate) + " ↑" + shortRate(c.net.tx_rate)
-                        : (running ? "shared" : "—");
-      // Project first in the sub-line: it is the shared prefix, so it belongs
-      // where it can be skimmed past rather than eating the name column.
-      const sub = [c.project, running ? c.status : c.state + " · " + c.status]
-        .filter(Boolean).join(" · ");
-      return '<tr class="' + (running ? "" : "is-stopped") + '" title="' + (c.full_name || c.name) + '">' +
-        "<td><div class=\"name-cell\"><i class=\"dot " + dot + '"></i><span class="ctr-name">' + c.name + "</span></div>" +
-        '<div class="ctr-sub">' + sub + "</div>" +
-        portLine(c) +
-        '<div class="ctr-bar"><i style="width:' + barPct + '%"></i></div></td>' +
-        '<td class="num">' + (running ? c.cpu.toFixed(1) + "%" : "—") + "</td>" +
-        '<td class="num">' + mem + "</td>" +
-        '<td class="num">' + net + "</td>" +
-        "</tr>";
+    const tbody = $("#ctr-tbl").querySelector("tbody");
+    const live = new Set();
+    list.forEach((c, i) => {
+      let row = ctrRows.get(c.id);
+      if (!row) { row = ctrRow(); ctrRows.set(c.id, row); }
+      live.add(c.id);
+      fillRow(row, c);
+      // Only rows that actually changed place are moved.
+      if (tbody.children[i] !== row.tr) tbody.insertBefore(row.tr, tbody.children[i] || null);
     });
-    setHTML($("#ctr-tbl").querySelector("tbody"), rows.join(""));
+    ctrRows.forEach((row, id) => {
+      if (!live.has(id)) { row.tr.remove(); ctrRows.delete(id); }
+    });
   }
 
   document.querySelectorAll(".sortbar .chip").forEach((chip) => {
@@ -353,16 +391,33 @@
   function savePins() { localStorage.setItem(PIN_KEY, JSON.stringify(pins)); }
   let pins = loadPins();
 
+  // Paths are compared the way the server's filesystem does: Windows ones in
+  // either slash direction and any case, since that is how Explorer treats them.
+  function sep() { return (storage && storage.sep) || "/"; }
+  function windowsPaths() { return sep() === "\\"; }
+  // A backslash is an ordinary character in a Linux file name, so it is only
+  // treated as a separator on Windows.
+  function slashes(p) { return windowsPaths() ? p.replace(/\\/g, "/") : p; }
+  function normPath(p) {
+    const q = slashes(p).replace(/\/+$/, "");
+    return windowsPaths() ? q.toLowerCase() : q;
+  }
+  function absolutePath(p) {
+    return windowsPaths() ? /^[a-z]:[\\/]/i.test(p) || p.indexOf("\\\\") === 0 : p.indexOf("/") === 0;
+  }
+
   // Longest matching root label wins, so "/mnt/data/x" resolves against the
   // "/mnt/data" root rather than the "/" root that also technically contains it.
   function bestRootForPath(path) {
+    const target = normPath(path);
     let best = null;
     storage.roots.forEach((r, i) => {
-      const label = r.name;
-      const matches = label === "/" ? path.indexOf("/") === 0 : (path === label || path.indexOf(label + "/") === 0);
-      if (!matches) return;
+      const label = normPath(r.name);   // "/" becomes "", C:\ becomes "c:"
+      if (target !== label && target.indexOf(label + "/") !== 0) return;
       if (!best || label.length > best.label.length) {
-        const rest = label === "/" ? path.slice(1) : path.slice(label.length + 1);
+        // Segments keep the case they were typed in; the server matches them
+        // case-insensitively where the filesystem does.
+        const rest = slashes(path).replace(/\/+$/, "").slice(label.length + 1);
         best = { rootIndex: i, label: label, segs: rest.split("/").filter(Boolean) };
       }
     });
@@ -384,7 +439,7 @@
 
   function submitPin(raw) {
     const path = raw.trim();
-    if (path.indexOf("/") !== 0) { flashPinError("Use an absolute path, e.g. /mnt/data/media"); return; }
+    if (!absolutePath(path)) { flashPinError("Use a full path, e.g. " + $("#pinform-input").placeholder); return; }
     const match = bestRootForPath(path);
     if (!match) { flashPinError("No storage root covers that path"); return; }
     const pin = { root: storage.roots[match.rootIndex].name, segs: match.segs, label: path };
@@ -411,10 +466,6 @@
   });
   $("#pinform-cancel").addEventListener("click", hidePinForm);
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  }
-
   function renderRootBar(active) {
     const rootChips = storage.roots.map((r, i) =>
       '<button role="tab" class="chip' + (i === active ? " is-on" : "") + '" data-root="' + i + '" type="button" aria-selected="' +
@@ -439,12 +490,17 @@
     if (b.classList.contains("pin-x")) removePin(pin); else goToPin(pin);
   });
 
+  // The crumbs read as the path itself: C:\Users\you on Windows. A root
+  // label's own trailing separator is dropped so it is not shown twice, except
+  // for "/", which would otherwise vanish.
   function renderCrumbs() {
-    const names = [storage.roots[rootIndex].name].concat(segs);
+    let root = storage.roots[rootIndex].name;
+    if (segs.length && root.length > 1 && root.slice(-1) === sep()) root = root.slice(0, -1);
+    const names = [root].concat(segs);
     $("#crumbs").innerHTML = names.map((n, i) => {
       const last = i === names.length - 1;
       return '<button type="button" data-depth="' + i + '"' + (last ? " disabled" : "") + ">" + escapeHtml(n) + "</button>" +
-        (last ? "" : '<span class="sep">/</span>');
+        (last ? "" : '<span class="sep">' + escapeHtml(sep()) + "</span>");
     }).join("");
   }
 
@@ -583,6 +639,7 @@
     let snap;
     try { snap = await (await fetch("/api/storage")).json(); } catch (err) { return; }
     storage = snap;
+    $("#pinform-input").placeholder = windowsPaths() ? "C:\\Users\\you\\Downloads" : "/mnt/data/media/movies";
     renderScanStatus();
     if (!snap.roots || !snap.roots.length) {
       emptyStorage(snap.error
@@ -614,7 +671,7 @@
   // (a full walk can run for minutes); the live stream carries it from there.
   $("#rescan").addEventListener("click", async () => {
     try {
-      const res = await fetch("/api/storage/rescan", { method: "POST" });
+      const res = await fetch("/api/storage/rescan", { method: "POST", headers: { "X-Kanshi": "1" } });
       onScanStatus(await res.json());
     } catch (err) { /* the next frame will say where things stand */ }
   });
@@ -652,7 +709,8 @@
         renderCpu(payload.vitals);
         renderMeters(payload.vitals);
         $("#uptime").textContent = "up " + duration(payload.vitals.uptime);
-        $("#foot-meta").textContent = "updated " + new Date().toLocaleTimeString();
+        $("#foot-meta").textContent = (appVersion ? "kanshi " + appVersion + " · " : "") +
+          "updated " + new Date().toLocaleTimeString();
       }
       if (payload.docker) renderContainers(payload.docker);
       if (payload.storage) onScanStatus(payload.storage);
@@ -674,6 +732,97 @@
     connect();
     loadStorage();
   });
+
+  /* ── network access ─────────────────────────────────────────────────── */
+  // Who else can open the dashboard. The server decides whether this page may
+  // change it (only from this computer, and only when no flag or environment
+  // variable pins it); the dialog just shows what it was told.
+  let appVersion = "";
+  let access = null;
+  const KIND = { local: "This computer", lan: "Local network", tailscale: "Tailscale", custom: "Address", other: "Other" };
+  const dlg = $("#access-dlg");
+  const box = (name) => $("#access-opts").querySelector('input[name="' + name + '"]');
+
+  function renderAccessLine() {
+    if (!access || !access.links) return;
+    const others = access.links.filter((l) => l.kind !== "local");
+    $("#access-line").textContent = others.length
+      ? "Also reachable at " + others.map((l) => l.url.replace(/^http:\/\//, "") + " (" + (KIND[l.kind] || l.kind) + ")").join(" · ")
+      : "Only reachable from this computer.";
+  }
+
+  function renderAccessDialog() {
+    const tokens = (access.mode || "local").split(",");
+    const all = tokens.indexOf("all") >= 0;
+    box("all").checked = all;
+    box("lan").checked = all || tokens.indexOf("lan") >= 0;
+    box("tailscale").checked = all || tokens.indexOf("tailscale") >= 0;
+    syncAccessBoxes();
+    // Explicit addresses have no checkbox; they are kept as they are.
+    const extra = tokens.filter((t) => ["local", "lan", "tailscale", "all"].indexOf(t) < 0);
+    $("#access-extra").hidden = !extra.length;
+    $("#access-extra").textContent = extra.length ? "Also listening on " + extra.join(", ") + " (set in the config)." : "";
+    $("#access-opts").disabled = !access.editable;
+    $("#access-save").hidden = !access.editable;
+    $("#access-reason").textContent = access.editable ? "" : access.reason || "";
+    $("#access-links").innerHTML = access.links.map((l) =>
+      '<li><span class="k">' + escapeHtml(KIND[l.kind] || l.kind) + '</span><a href="' + escapeHtml(l.url) +
+      '" target="_blank" rel="noopener">' + escapeHtml(l.url) + "</a></li>").join("");
+  }
+
+  // "Every network" already includes the other two, so they are shown ticked
+  // and locked while it is on.
+  function syncAccessBoxes() {
+    const all = box("all").checked;
+    ["lan", "tailscale"].forEach((n) => {
+      box(n).disabled = all;
+      if (all) box(n).checked = true;
+    });
+  }
+  box("all").addEventListener("change", () => {
+    if (!box("all").checked) { box("lan").checked = false; box("tailscale").checked = false; }
+    syncAccessBoxes();
+  });
+
+  async function loadAccess() {
+    try {
+      access = await (await fetch("/api/access")).json();
+    } catch (err) { return; }
+    renderAccessLine();
+    if (dlg.open) renderAccessDialog();
+  }
+
+  $("#access-open").addEventListener("click", async () => {
+    $("#access-err").textContent = "";
+    await loadAccess();
+    if (!access) return;
+    renderAccessDialog();
+    dlg.showModal();
+  });
+
+  $("#access-save").addEventListener("click", async () => {
+    const extra = (access.mode || "").split(",").filter((t) => ["local", "lan", "tailscale", "all", ""].indexOf(t) < 0);
+    const picked = box("all").checked ? ["all"] : ["lan", "tailscale"].filter((n) => box(n).checked);
+    const mode = picked.concat(box("all").checked ? [] : extra).join(",") || "local";
+    $("#access-err").textContent = "";
+    try {
+      const res = await fetch("/api/access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Kanshi": "1" },
+        body: JSON.stringify({ mode: mode }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim() || "HTTP " + res.status);
+      access = await res.json();
+      renderAccessLine();
+      renderAccessDialog();
+      if (access.reason) $("#access-err").textContent = access.reason;
+    } catch (err) {
+      $("#access-err").textContent = "Could not change it: " + err.message;
+    }
+  });
+
+  fetch("/api/config").then((r) => r.json()).then((c) => { appVersion = c.version || ""; }).catch(() => {});
+  loadAccess();
 
   /* ── theme toggle ───────────────────────────────────────────────────── */
   const saved = localStorage.getItem("kanshi-theme");
