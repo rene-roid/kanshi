@@ -1,0 +1,206 @@
+name: Release
+
+# Run by hand from the Actions tab: Release → Run workflow → enter a version.
+# It tests, builds the Windows and Linux binaries, pushes a multi-arch image to
+# GitHub Container Registry, then creates the tag and the GitHub release with
+# the binaries attached.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. v0.2.0"
+        required: true
+        type: string
+      prerelease:
+        description: "Pre-release (the image is not tagged latest)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      number: ${{ steps.v.outputs.number }}
+      winver: ${{ steps.v.outputs.winver }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # to see existing tags
+
+      - id: v
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a version like v1.2.3 or v1.2.3-rc.1"
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::$VERSION has already been released"
+            exit 1
+          fi
+          {
+            echo "version=$VERSION"
+            echo "number=${VERSION#v}"
+            # Windows version resources want four plain numbers.
+            echo "winver=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.0"
+          } >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test
+    needs: check
+    uses: ./.github/workflows/ci.yml
+
+  binaries:
+    name: Build binaries
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Give the Windows executable its icon and version details
+        env:
+          WINVER: ${{ needs.check.outputs.winver }}
+        run: |
+          go install github.com/tc-hib/go-winres@v0.3.3
+          "$(go env GOPATH)/bin/go-winres" simply \
+            --arch amd64,arm64 --manifest cli \
+            --icon web/apple-touch-icon.png \
+            --product-name kanshi --file-description "kanshi dashboard" \
+            --original-filename kanshi.exe --copyright "Copyright (c) rene-roid. MIT License." \
+            --product-version "$WINVER" --file-version "$WINVER"
+
+      # Everything cross-compiles from here: CGO is off and there are no
+      # third-party modules, so no Windows or ARM runner is needed.
+      - name: Build
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          mkdir dist
+          for target in windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
+            os=${target%/*} arch=${target#*/} ext=
+            [ "$os" = windows ] && ext=.exe
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.version=$VERSION" -o "dist/kanshi-$os-$arch$ext" .
+          done
+          cp packaging/kanshi.service dist/
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binaries
+          path: dist/
+          if-no-files-found: error
+
+  image:
+    name: Build and push the image
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.check.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.check.outputs.version }},enable=${{ !inputs.prerelease }}
+            type=raw,value=latest,enable=${{ !inputs.prerelease }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ needs.check.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: Publish the release
+    needs: [check, binaries, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries
+          path: dist
+
+      - name: Write the install notes
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          NUMBER: ${{ needs.check.outputs.number }}
+        run: |
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$VERSION"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$NUMBER"
+          cat > notes.md <<'EOF'
+          ## Download
+
+          | Platform | Download |
+          |---|---|
+          | Windows, x64 | [kanshi-windows-amd64.exe](@BASE@/kanshi-windows-amd64.exe) |
+          | Windows, ARM | [kanshi-windows-arm64.exe](@BASE@/kanshi-windows-arm64.exe) |
+          | Linux, x64 | [kanshi-linux-amd64](@BASE@/kanshi-linux-amd64) |
+          | Linux, ARM64 (Raspberry Pi 4/5 and similar) | [kanshi-linux-arm64](@BASE@/kanshi-linux-arm64) |
+          | Docker | `docker pull @IMAGE@` |
+
+          **Windows:** double-click the `.exe`. The dashboard opens at http://localhost:8100.
+
+          **Linux:**
+
+          ```sh
+          curl -fLo kanshi @BASE@/kanshi-linux-amd64 && chmod +x kanshi && ./kanshi
+          ```
+
+          **Docker Compose:** `KANSHI_VERSION=@NUMBER@ docker compose up -d` from a checkout, or see the README.
+
+          Every file's SHA-256 is in `SHA256SUMS`. The [installation guide](https://github.com/@REPO@/blob/main/docs/installation.md) covers running it as a service and opening it to your LAN or tailnet.
+          EOF
+          sed -i -e "s|@BASE@|$base|g" -e "s|@IMAGE@|$image|g" -e "s|@NUMBER@|$NUMBER|g" -e "s|@REPO@|$GITHUB_REPOSITORY|g" notes.md
+          cat notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          flags=()
+          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+          # --notes is put ahead of the generated changelog.
+          gh release create "$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "kanshi $VERSION" --generate-notes --notes "$(cat notes.md)" \
+            "${flags[@]}"

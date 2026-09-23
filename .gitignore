@@ -28,3 +28,12 @@ coverage/
 Thumbs.db
 .vscode/
 .idea/
+
+# Release builds and Windows resource objects
+*.exe
+*.syso
+kanshi-smoke*
+smoke.log
+vitals.json
+storage.json
+kanshi.env

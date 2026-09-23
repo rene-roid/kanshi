@@ -1,0 +1,62 @@
+name: CI
+
+# Runs on every push and pull request, and is also called by the release
+# workflow so nothing is published that has not passed exactly these checks.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          # There are no third-party modules, so there is nothing to cache.
+          cache: false
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Vet the other platform's code
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then GOOS=linux go vet ./...; else GOOS=windows go vet ./...; fi
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Test for data races
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 ./...
+
+      - name: Smoke test the binary
+        shell: bash
+        run: scripts/smoke.sh
+
+  image:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
