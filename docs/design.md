@@ -20,7 +20,8 @@ next time someone is watching.
 This matters more than it sounds. On the homeserver this was written for, the previous version scanned every
 30 minutes whether or not anyone was watching: each scan read ~2.8 GB of directory metadata from disk (the 96 MB
 memory limit lets the kernel drop that cache between scans) and used ~42 CPU-seconds. That added up to ~130 GB of
-disk reads and half an hour of CPU a day, for nobody. Now an unwatched kanshi reads nothing.
+disk reads and half an hour of CPU a day, for nobody. Now an unwatched kanshi reads nothing from disk, and used
+88 ms of CPU over two measured minutes.
 
 ## Listening decides who can connect
 
@@ -112,8 +113,8 @@ gzipped once. `index.html` refers to each as `/static/app.js?v=<hash>`, and thos
 a returning browser downloads nothing but a 304 for the page itself.
 
 Live updates are one Server-Sent Events stream per browser. It is gzip-compressed for the life of the connection:
-consecutive updates are nearly identical and deflate's window spans several of them, so each ~16 KB update shrinks
-to a few hundred bytes on the wire. The containers table updates rows in place rather than rebuilding itself every
+consecutive updates are nearly identical and deflate's window reaches back into the previous one, so a ~16 KB update
+costs about 2 KB on the wire — a minute of watching went from 214 KB to 28 KB on the homeserver. The containers table updates rows in place rather than rebuilding itself every
 tick, and a background tab drops its stream, which is what lets the server go idle.
 
 ## Permissions

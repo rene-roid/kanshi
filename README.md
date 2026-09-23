@@ -189,8 +189,8 @@ the executables, checksums and install notes. After the very first release, set 
 ## API
 
 The page holds one Server-Sent Events connection, `/api/stream`, and the server pushes every update over it —
-nothing polls. The stream is gzip-compressed for browsers that accept it, which shrinks each update to a few
-hundred bytes.
+nothing polls. The stream is gzip-compressed for browsers that accept it: on a host with 30 containers each
+update is ~16 KB of JSON but about 2 KB on the wire.
 
 | Endpoint | What it returns |
 |---|---|
