@@ -27,7 +27,17 @@ func TestSampleLooksLikeAMachine(t *testing.T) {
 	if len(s.Filesystems) == 0 {
 		t.Error("no volume meters")
 	}
-	if _, _, ok := r.netCounters(); !ok {
-		t.Error("network counters unavailable")
+}
+
+// The rates are deltas and may well be zero on a quiet machine, but the
+// counters behind them are totals since boot: any running machine has read
+// from its disk and talked on its network.
+func TestCountersAreLive(t *testing.T) {
+	r := New(roots.NewResolver([]string{"auto"}, ""))
+	if rx, tx, ok := r.netCounters(); !ok || rx+tx == 0 {
+		t.Errorf("network counters: rx=%d tx=%d ok=%v", rx, tx, ok)
+	}
+	if read, write, ok := r.diskCounters(); !ok || read+write == 0 {
+		t.Errorf("disk counters: read=%d write=%d ok=%v", read, write, ok)
 	}
 }
