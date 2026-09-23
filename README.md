@@ -2,132 +2,30 @@
 
 # kanshi
 
-**A one-page, mobile-first glance at this homeserver.**
+**A one-page, mobile-first glance at a machine: CPU, memory, a storage map, and every Docker container.**
 
-Live CPU and RAM, a Filelight-style storage treemap, and `docker stats` for
-every container — no historical storage, no alerting, no external services.
+One small program for Linux or Windows. No database, no agents, no history, no alerting —
+open it, see what's going on, close it. When nobody is looking it does nothing at all.
 
-[![Go](https://img.shields.io/badge/Go-1.25-00add8?logo=go&logoColor=white)](https://go.dev/)
-[![Image](https://img.shields.io/badge/image-9.6MB%20scratch-0b7285)](https://hub.docker.com/_/scratch)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
-[![npm](https://img.shields.io/badge/npx-%40yuuki824%2Fkanshi-cb3837?logo=npm&logoColor=white)](https://www.npmjs.com/package/@yuuki824/kanshi)
+[![CI](https://github.com/rene-roid/kanshi/actions/workflows/ci.yml/badge.svg)](https://github.com/rene-roid/kanshi/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/rene-roid/kanshi?sort=semver)](https://github.com/rene-roid/kanshi/releases/latest)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20Docker-0b7285)](#install)
+[![Image](https://img.shields.io/badge/image-ghcr.io%2Frene--roid%2Fkanshi-2496ed?logo=docker&logoColor=white)](https://github.com/rene-roid/kanshi/pkgs/container/kanshi)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 </div>
-
----
-
-## Requirements
-
-- **Linux host.** Metrics come from `/proc`, `/sys` and `statfs(2)` — macOS and Windows are not supported.
-- **Docker Engine** with the **Compose v2 plugin** (`docker compose version` must work).
-- **Access to `/var/run/docker.sock`** — run as root or as a user in the `docker` group.
-- **Node.js 18+** — only if you install with `npx`.
-- Nothing else. No Go toolchain, no database, no build step: the image compiles the binary itself.
-
-## Run it
-
-From a clone of this repository:
-
-```sh
-docker compose up -d --build
-```
-
-Or from anywhere, without cloning:
-
-```sh
-npx @yuuki824/kanshi
-```
-
-Either way the dashboard is at <http://localhost:8100>. The first run builds the
-image, so give it a minute before the health check passes.
-
-## Expose it on a network
-
-Kanshi binds to `127.0.0.1` by default — private to the host. Set `KANSHI_HOST`
-to change that:
-
-```sh
-# Tailnet only (recommended). Reachable from your other Tailscale devices.
-KANSHI_HOST="$(tailscale ip -4)" docker compose up -d
-
-# Local LAN only, on this machine's LAN address.
-KANSHI_HOST=192.168.1.50 docker compose up -d
-
-# Every interface. Only behind an authenticated reverse proxy.
-KANSHI_HOST=0.0.0.0 docker compose up -d
-```
-
-The same variables work with `npx`:
-
-```sh
-KANSHI_HOST="$(tailscale ip -4)" npx @yuuki824/kanshi
-```
-
-> **`0.0.0.0` publishes Docker information to anyone who can reach the port.**
-> Prefer the Tailscale address.
-
-To make it permanent, copy `.env.example` to `.env` and edit it. A `.env` in the
-directory you run `npx` from is picked up automatically.
-
-## Common commands
-
-```sh
-docker compose logs -f          # follow logs
-docker compose restart          # restart it
-docker compose down             # stop and remove
-docker compose up -d --build    # rebuild after changing the source
-
-npx @yuuki824/kanshi logs -f    # same, via the launcher
-npx @yuuki824/kanshi down
-npx @yuuki824/kanshi@latest     # update to the newest published version
-```
-
-Not starting? Check the container state and the last lines of its log:
-
-```sh
-docker ps --filter name=kanshi
-docker logs --tail=100 kanshi
-```
-
-## Settings
-
-Every value below is the built-in default; override it in `.env` or the
-environment.
-
-| Variable | Default | What it does |
-|---|---|---|
-| `KANSHI_HOST` | `127.0.0.1` | Bind address (see above). Set by Compose; the bare binary defaults to `0.0.0.0` |
-| `KANSHI_PORT` | `8100` | Bind port |
-| `KANSHI_POLL_INTERVAL` | `5` | Seconds between live ticks |
-| `KANSHI_IDLE_TIMEOUT` | `30` | Seconds with no browser before polling stops |
-| `KANSHI_DOCKER_CONCURRENCY` | `8` | Parallel container stat requests |
-| `KANSHI_STORAGE_ROOTS` | `/=/hostfs,/mnt/data=/mnt/data` | `label=path` pairs for the storage map |
-| `KANSHI_STORAGE_INTERVAL` | `1800` | Seconds between disk walks |
-| `KANSHI_STORAGE_EXCLUDE` | *(empty)* | Comma-separated paths to skip, container-side |
-| `KANSHI_STORAGE_CPU` | `25` | Share of one core, in %, the walk may average; `100` turns the throttle off |
-| `KANSHI_TREE_DEPTH` | `4` | Folder depth you can drill into; deeper bytes roll up into their ancestor |
-| `KANSHI_WEB_DIR` | *(embedded)* | Serve `web/` from disk instead of the binary |
-
-The walk of `/` is the slowest thing here, dominated by ~100k overlay2 files.
-To skip them, at the cost of their ~48 GB no longer being counted:
-
-```sh
-KANSHI_STORAGE_EXCLUDE=/hostfs/var/lib/docker
-```
-
-## Screenshots
 
 <table>
 <tr>
 <td width="60%">
 
-**Vitals & storage** — live CPU/RAM meters and the storage treemap
+**Vitals & storage** — live CPU/RAM meters and the storage map
 <img src="docs/screenshots/dashboard-vitals.png" alt="Processor, memory and storage map cards" />
 
 </td>
 <td width="40%">
 
-**Mobile** — the same cards, stacked for a phone screen
+**Mobile** — the same cards, stacked for a phone
 <img src="docs/screenshots/dashboard-mobile.png" alt="Dashboard on a mobile viewport" />
 
 </td>
@@ -136,123 +34,182 @@ KANSHI_STORAGE_EXCLUDE=/hostfs/var/lib/docker
 
 ## Features
 
-- 📊 **Processor** — hero utilisation %, per-core bars, load average, temperature, host net/disk throughput
-- 🧠 **Memory & volumes** — RAM, swap, and one meter per storage root
-- 🗺 **Storage map** — squarified treemap you can tap to drill into, with a table twin below that lists every folder (show more / show all) and, on request, the largest files; depth-bounded so it stays fast on large filesystems
-- 🐳 **Containers** — per-container CPU%, memory, network rate and health straight from the Docker Engine API, plus each published `host → internal` port mapping as a link that opens on whatever address you reached the dashboard at
-- ⚡ **One SSE connection** — the server pushes every tick over `/api/stream`; nothing polls, nothing needs a manual reload
-- 😴 **Idles to near-zero** — the poller and the Docker socket both go quiet after `KANSHI_IDLE_TIMEOUT` with nobody watching
-- 🪶 **9.6 MB image, ~8 MB resident** — one static Go binary on `scratch`: no interpreter, no shell, no package manager
-- 🔒 **Tailscale-friendly** — binds to `127.0.0.1` by default; point it at a Tailscale IP to share it on a tailnet instead of the open LAN
+- 📊 **Processor** — overall and per-core utilisation, load average, temperature, network and disk throughput
+- 🧠 **Memory & volumes** — RAM, swap, and how full each drive is
+- 🗺 **Storage map** — a treemap of what is using your disk. Tap to drill in; a table below lists every folder and, on request, the largest files. Pin any folder by path
+- 🐳 **Containers** — CPU, memory, network and health for every Docker container, with each published port as a link
+- 🖥 **Linux and Windows** — one executable per platform, or a 10 MB Docker image
+- 🔒 **Private by default** — only this computer can open it until you say otherwise; then pick your LAN, your Tailscale network, or both
+- 😴 **Idles to zero** — with no browser open it stops reading stats, stops talking to Docker, and stops scanning disks
+- 🪶 **Tiny** — ~8 MB of memory, no dependencies, nothing to install alongside it
 
-## Tech stack
+## Install
 
-| Layer | Choice |
+Pick one. Every option ends with the dashboard at **<http://localhost:8100>**.
+
+### Windows
+
+1. Download `kanshi-windows-amd64.exe` from the [latest release](https://github.com/rene-roid/kanshi/releases/latest)
+   (`kanshi-windows-arm64.exe` on an ARM laptop).
+2. Double-click it. The dashboard opens in your browser.
+
+Windows may say it *protected your PC* because the file is not code-signed: choose **More info → Run anyway**.
+The storage map covers `C:\`, your user folder and every other fixed drive; run it as administrator to include
+folders your account cannot open. Docker Desktop is picked up automatically if it is running.
+
+### Linux
+
+```sh
+curl -fLo kanshi https://github.com/rene-roid/kanshi/releases/latest/download/kanshi-linux-amd64
+chmod +x kanshi
+./kanshi
+```
+
+Use `kanshi-linux-arm64` on a Raspberry Pi or other 64-bit ARM board. The storage map covers `/` and every
+drive mounted under `/mnt`. To see container stats your user needs to be in the `docker` group.
+
+To run it as a service, see [the installation guide](docs/installation.md#linux-as-a-service).
+
+### Docker Compose (recommended on a Docker host)
+
+```sh
+curl -fLO https://raw.githubusercontent.com/rene-roid/kanshi/main/docker-compose.yml
+docker compose up -d
+```
+
+The container reads the host's `/proc`, its Docker socket and its filesystem (all read-only), so what you see is
+the host, not the container. The image is Linux-only by nature; on Windows use the `.exe`.
+
+### npx
+
+With Node.js 18+ and Docker installed, this runs the same Compose setup without a checkout:
+
+```sh
+npx @yuuki824/kanshi           # start
+npx @yuuki824/kanshi update    # pull the newest image and restart
+npx @yuuki824/kanshi down      # stop
+```
+
+The [installation guide](docs/installation.md) has the details for each: services, permissions, updating,
+uninstalling and troubleshooting.
+
+## Who can open it
+
+Kanshi has no login, so who can reach it is decided entirely by where it listens. **This computer can always
+open it at `localhost`.** On top of that, choose any of:
+
+| Access | Who else can open it |
 |---|---|
-| Backend | Go 1.25, standard library only — zero third-party dependencies |
-| Host metrics | `/proc` and `/sys` parsed directly; `statfs(2)` for volumes |
-| Live updates | Server-Sent Events (`/api/stream`) |
-| Frontend | Vanilla JS, hand-rolled SVG treemap — no build step, embedded in the binary |
-| Container metrics | Docker Engine API (one-shot stats, not the streaming daemon default) |
-| Packaging | `scratch` image via multi-stage build, Docker Compose, `npx` launcher |
+| `local` *(default)* | nobody — only this computer |
+| `lan` | phones and computers on the same local network, wired or Wi-Fi |
+| `tailscale` | your devices on your [Tailscale](https://tailscale.com) network, from anywhere |
+| `all` | anyone who can reach any of this machine's addresses, public ones included |
+
+Combine them with commas: `lan,tailscale`. There are three ways to set it:
+
+- **From the dashboard** — open it on this computer, click **Network** at the bottom, tick what you want, **Save**.
+  The choice is kept in `kanshi.env` and applied immediately, no restart. (Opened from any other device, the
+  panel is read-only: only the machine itself can widen access.)
+- **A flag** — `kanshi --access lan,tailscale`
+- **The environment or a settings file** — `KANSHI_ACCESS=tailscale` in `.env` (Compose) or `kanshi.env`
+
+Kanshi notices network changes on its own: if Tailscale connects after it starts, or the laptop joins a new
+Wi-Fi network, it starts listening there within 30 seconds. At startup it prints every address it can be opened at.
+
+> **Prefer `tailscale` over `all`.** `all` puts your container list and disk layout in front of anyone who can
+> reach the port. Only use it behind a firewall, or a reverse proxy that asks for a login.
+
+## Settings
+
+Every setting is an environment variable, and can also go in a **`kanshi.env`** file using the same
+`KEY=VALUE` lines ([`.env.example`](.env.example) lists them all). Kanshi reads `kanshi.env` from next to the
+executable, or from your config folder (`%APPDATA%\kanshi\` on Windows, `~/.config/kanshi/` on Linux).
+Precedence is: flag, then environment, then file, then the default.
+
+| Variable | Flag | Default | What it does |
+|---|---|---|---|
+| `KANSHI_ACCESS` | `--access` | `local` | Who can open the dashboard ([above](#who-can-open-it)) |
+| `KANSHI_PORT` | `--port` | `8100` | Port to listen on |
+| `KANSHI_CONFIG` | `--config` | *(see above)* | Path of the settings file |
+| | `--open` | on when double-clicked on Windows | Open the dashboard in the browser at startup |
+| `KANSHI_STORAGE_ROOTS` | | `auto` | Folders in the storage map: `auto`, `path`, or `label=path`, comma-separated. `auto,/srv` adds to the defaults |
+| `KANSHI_STORAGE_EXCLUDE` | | *(none)* | Folders to skip entirely, e.g. `/var/lib/docker` |
+| `KANSHI_STORAGE_INTERVAL` | | `1800` | Seconds between rescans while someone is watching |
+| `KANSHI_STORAGE_CPU` | | `25` | Share of one core, in %, a scan may use. `100` = unthrottled |
+| `KANSHI_TREE_DEPTH` | | `4` | Folder depth you can drill into; deeper bytes are still counted |
+| `KANSHI_POLL_INTERVAL` | | `5` | Seconds between live updates |
+| `KANSHI_IDLE_TIMEOUT` | | `30` | Seconds with no browser before everything stops |
+| `KANSHI_DOCKER_CONCURRENCY` | | `8` | Parallel container stat requests |
+| `DOCKER_HOST` | | platform default | Docker endpoint: `unix://…`, `npipe://…` or `tcp://…` |
+| `KANSHI_HOST_ROOT` | | *(none; `/hostfs` in the image)* | Where the host's `/` is mounted when running in a container |
+| `KANSHI_WEB_DIR` | | *(embedded)* | Serve the frontend from disk, for frontend development |
+
+`kanshi --help` lists the flags; `kanshi --version` prints the version.
+
+### What the storage map covers
+
+With `KANSHI_STORAGE_ROOTS=auto`:
+
+- **Linux:** `/`, plus every real filesystem mounted at or under `/mnt` (`/mnt/data`, `/mnt/usb`, a NAS share…).
+  Drives mounted later appear at the next scan.
+- **Windows:** the system drive (`C:\`), your user folder, and every other fixed drive (`D:\`, `E:\`…).
+  Your user folder is inside `C:\`, and both come out of a single pass over the drive.
+
+Scans run at the lowest CPU and disk priority and are throttled to a quarter of one core. After the first
+scan they only run while someone has the dashboard open, and only if the drives have actually changed.
+
+## Updating
+
+- **Windows / Linux binary:** download the new file from [Releases](https://github.com/rene-roid/kanshi/releases) and replace the old one.
+- **Compose:** `docker compose pull && docker compose up -d`
+- **npx:** `npx @yuuki824/kanshi update`
+
+## Building from source
+
+Go 1.25 or newer is the only requirement: there are no third-party modules.
+
+```sh
+go build .            # the binary for this machine
+go test ./...         # the tests
+GOOS=windows go build -o kanshi.exe .   # cross-compile for Windows from anywhere
+docker compose up -d --build            # build the image from this checkout
+```
+
+The frontend is plain HTML, CSS and JavaScript with no build step, embedded into the binary at compile time.
+Set `KANSHI_WEB_DIR=./web` to serve it from disk while editing.
+
+## Releasing
+
+Releases are made by the **Release** workflow, run by hand: *Actions → Release → Run workflow*, enter a version
+such as `v0.2.0`. It runs the full test suite on Linux and Windows, builds the Windows and Linux executables
+(x64 and ARM64), pushes a multi-arch image to `ghcr.io/rene-roid/kanshi`, and publishes a GitHub release with
+the executables, checksums and install notes. After the very first release, set the package's visibility to
+**Public** under the repository's *Packages* settings so `docker pull` works without logging in.
 
 ## API
 
-| Card | Source | Refresh |
-|---|---|---|
-| Processor — hero %, per-core bars, load, temp, host net/disk throughput | `/proc/stat`, `/proc/net/dev`, `/proc/diskstats`, `/sys` hwmon | every `KANSHI_POLL_INTERVAL` |
-| Memory & volumes — RAM, swap, one meter per storage root | `/proc/meminfo` + `statfs(2)` | same tick |
-| Storage map — squarified treemap, tap to drill, table twin below | cached breadth-first `getdents`+`fstatat` walk | every `KANSHI_STORAGE_INTERVAL`, or the Rescan button |
-| Containers — CPU%, memory, network rates, health, port mappings | Docker Engine API | same tick |
+The page holds one Server-Sent Events connection, `/api/stream`, and the server pushes every update over it —
+nothing polls. The stream is gzip-compressed for browsers that accept it, which shrinks each update to a few
+hundred bytes.
 
-The browser holds **one SSE connection** (`/api/stream`) and the server pushes
-each tick, including the storage scan's status and progress. The storage map
-itself is never pushed: `/api/storage` is one summary line per root, and each
-folder is fetched from `/api/storage/dir?root=0&path=home/yuuki` as it is
-opened, answered from the cached walk without touching the disk. A background
-tab drops its stream, so the server idles while nobody is looking. The rest of
-the REST surface is `/api/vitals`, `/api/containers`,
-`POST /api/storage/rescan`, `/healthz`.
+| Endpoint | What it returns |
+|---|---|
+| `GET /api/stream` | Live updates: vitals, containers and the storage scan's progress |
+| `GET /api/vitals` | CPU, memory, swap, network, disk and volume figures |
+| `GET /api/containers` | Per-container stats |
+| `GET /api/storage` | One summary line per storage root |
+| `GET /api/storage/dir?root=0&path=home/you` | One folder from the last scan (never touches the disk) |
+| `POST /api/storage/rescan` | Starts a scan; needs the `X-Kanshi: 1` header |
+| `GET /api/access`, `POST /api/access` | The access mode; changing it only works from this computer |
+| `GET /api/config` | Version, OS and intervals |
+| `GET /healthz` | `{"ok":true}` |
 
-## Building
+## How it works
 
-Docker is the only build dependency; the image compiles the binary itself.
+[docs/design.md](docs/design.md) explains the choices behind it: why it stops when nobody is looking, how the disk
+scan stays fast and polite on both platforms, why container stats use Docker's one-shot mode, and what the
+memory number in `docker stats` actually means.
 
-```sh
-docker compose up -d --build
-```
+## License
 
-With a local Go toolchain (1.22+), `go build .` and `go vet ./...` work from the
-repository root with no module downloads — there are no third-party imports. The
-frontend is embedded with `//go:embed`, so a rebuild is needed after editing
-anything under `web/`; set `KANSHI_WEB_DIR=./web` to serve it from disk instead
-while iterating. Note that a binary run outside Compose binds `0.0.0.0` unless
-you set `KANSHI_HOST` yourself.
-
-Publishing the npm launcher:
-
-```sh
-npm login
-npm run test
-npm run pack:check
-npm publish
-```
-
-## Design notes
-
-**It stops working when you stop looking.** After `KANSHI_IDLE_TIMEOUT` with no
-browser attached, the poller stops entirely and the Docker socket goes
-untouched until someone loads the page. Idle cost is ~0.2% of one core.
-
-**One-shot container stats.** `GET /containers/{id}/stats?stream=false` makes the
-daemon block for a full collection cycle so it can populate `precpu_stats` —
-measured at **8.3s per tick** across 31 containers. Kanshi uses `one-shot=true`
-(**0.07s**) and computes CPU% against the previous tick itself. Same arithmetic,
-and a 5s window is steadier to read than the daemon's 1s one.
-
-**The disk walk is breadth-first and depth-bounded.** It goes one level at a
-time, so the folders you can drill into are all finished before the deep, bulky
-part of the tree starts. Only directories within `KANSHI_TREE_DEPTH` get a node
-of their own — ~2.3k instead of ~96k on this host. Deeper directories are still
-fully traversed and counted; their bytes roll up into the nearest kept ancestor.
-Sizes come from `st_blocks` (so they match `du`, not apparent size) and
-hardlinked files are counted once.
-
-**The walk barely allocates.** Directory entries are parsed straight out of the
-`getdents64` buffer and stat'ed with `fstatat` relative to the open directory,
-so the kernel resolves one path component rather than the whole path, and no
-string is built per file. Each BFS level's paths are packed into one buffer.
-Compared with the previous depth-first walk this uses ~30% less CPU and ~5× fewer
-garbage collections. The trade-off is that a whole level is queued at once,
-which raises the walk's peak memory by a few MB. The heap goes back to the OS as
-soon as the walk ends.
-
-**The walk is throttled and runs at `nice 19`.** It runs on a locked, dedicated OS
-thread with the lowest best-effort I/O priority. Linux applies both settings per
-thread, and the runtime retires that thread when the walk ends rather than
-handing it back to the poller. `nice` only matters when something else wants the
-CPU, so the walk also measures its own thread's CPU time and sleeps between
-directories to average `KANSHI_STORAGE_CPU` (25% of one core by default). Time
-spent waiting on the disk counts as idle. On a warm cache that makes a pass
-about 4× longer but never more than a quarter of a core; on a cold cache the
-disk is the bottleneck anyway.
-
-**Unreadable directories are reported, not hidden.** If the walk cannot enter a
-directory it is counted and the storage card says so — a silently truncated tree
-that under-reports by 300 GB is worse than an obviously incomplete one.
-
-**Permissions.** Runs as root with `cap_drop: ALL` plus **`DAC_READ_SEARCH`** —
-read and traverse bypass, but *not* write bypass (that would be `DAC_OVERRIDE`).
-Without it the walk cannot enter `/home/yuuki` (mode 0750) and silently
-under-reports the root filesystem by ~330 GB. The rootfs is read-only and every
-host mount is `:ro`.
-
-**About kanshi's own memory number.** The dashboard will show kanshi using far
-more memory than the process actually has. That figure is mostly **reclaimable
-kernel dentry cache** charged to its cgroup — an unavoidable side effect of
-`lstat`-ing ~150k files during a walk. Measured anonymous memory is **~8 MB at
-rest and ~20 MB at the peak of a full walk**; `mem_limit` acts as a ceiling on
-the cache and the kernel reclaims it under pressure. `GOMEMLIMIT` sits below
-`mem_limit` so an unusually large filesystem makes the collector work harder
-instead of getting the container OOM-killed. The number matches what
-`docker stats` reports for any container, which is the point.
+[MIT](LICENSE) © rene-roid
