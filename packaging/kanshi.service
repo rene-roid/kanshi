@@ -1,0 +1,49 @@
+# systemd unit for the standalone Linux binary.
+#
+#   sudo install -m 755 kanshi-linux-amd64 /usr/local/bin/kanshi
+#   sudo install -m 644 kanshi.service /etc/systemd/system/kanshi.service
+#   sudo systemctl enable --now kanshi
+#
+# Settings go in /var/lib/kanshi/kanshi.env (see .env.example). The service
+# can write that file itself, so a network change made from the dashboard on
+# this machine is kept across restarts. Environment= lines in a drop-in
+# (sudo systemctl edit kanshi) work too, and take precedence.
+[Unit]
+Description=kanshi dashboard
+Documentation=https://github.com/rene-roid/kanshi
+Wants=network-online.target
+After=network-online.target docker.service tailscaled.service
+
+[Service]
+ExecStart=/usr/local/bin/kanshi
+StateDirectory=kanshi
+Environment=KANSHI_CONFIG=%S/kanshi/kanshi.env
+Restart=on-failure
+RestartSec=5
+
+# A throwaway user, in the docker group so it can read container stats.
+DynamicUser=yes
+SupplementaryGroups=docker
+# Read and traverse any directory, so the storage map is complete. This does
+# not grant writing anywhere.
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# Same budget the container gets.
+Environment=GOMAXPROCS=2 GOMEMLIMIT=80MiB
+CPUQuota=100%
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

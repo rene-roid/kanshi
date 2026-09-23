@@ -1,20 +1,24 @@
 {
   "name": "@yuuki824/kanshi",
-  "version": "0.1.2",
-  "description": "Launch the Kanshi Docker host dashboard with npx.",
-  "license": "UNLICENSED",
+  "version": "0.2.0",
+  "description": "Launch the Kanshi homeserver dashboard with npx.",
+  "license": "MIT",
   "bin": {
     "kanshi": "bin/kanshi.js"
   },
   "files": [
     "main.go",
+    "main_other.go",
+    "main_windows.go",
     "go.mod",
     "internal",
+    "!internal/**/*_test.go",
     "web",
     "bin",
     "Dockerfile",
     "docker-compose.yml",
     "README.md",
+    "LICENSE",
     ".env.example"
   ],
   "engines": {
@@ -32,6 +36,14 @@
     "go",
     "dashboard",
     "monitoring",
-    "tailscale"
-  ]
+    "tailscale",
+    "homeserver",
+    "windows",
+    "linux"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rene-roid/kanshi.git"
+  },
+  "homepage": "https://github.com/rene-roid/kanshi#readme"
 }

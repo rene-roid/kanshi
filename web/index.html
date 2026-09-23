@@ -95,6 +95,7 @@
       <h2 id="ctr-h">Containers</h2>
       <span id="ctr-meta" class="muted small">—</span>
     </div>
+    <p id="ctr-empty" class="muted small" hidden>Docker was not found on this machine. Containers appear here once it is running.</p>
     <div class="sortbar" role="group" aria-label="Sort containers">
       <button class="chip is-on" data-sort="cpu" type="button">CPU</button>
       <button class="chip" data-sort="mem" type="button">Memory</button>
@@ -115,9 +116,34 @@
 
   <footer class="foot muted small">
     <span id="foot-meta">—</span>
-    <button id="theme" class="btn btn-quiet" type="button" aria-label="Toggle colour theme">Theme</button>
+    <span class="foot-actions">
+      <button id="access-open" class="btn btn-quiet" type="button" aria-haspopup="dialog">Network</button>
+      <button id="theme" class="btn btn-quiet" type="button" aria-label="Toggle colour theme">Theme</button>
+    </span>
   </footer>
+  <p id="access-line" class="access-line muted small" aria-live="polite"></p>
 </main>
+
+<dialog id="access-dlg" class="dlg" aria-labelledby="access-h">
+  <form method="dialog" id="access-form">
+    <h2 id="access-h">Who can open this dashboard</h2>
+    <p class="muted small">This computer can always open it, at localhost.</p>
+    <fieldset id="access-opts">
+      <legend class="visually-hidden">Also allow</legend>
+      <label><input type="checkbox" name="lan"><span><b>Local network</b><span class="muted small">Phones and computers on the same Wi-Fi or wired network.</span></span></label>
+      <label><input type="checkbox" name="tailscale"><span><b>Tailscale</b><span class="muted small">Your devices on your tailnet, from anywhere.</span></span></label>
+      <label><input type="checkbox" name="all"><span><b>Every network</b><span class="muted small">⚠ Every interface, public ones included. Kanshi has no login, so only use this behind a firewall or a proxy that asks for one.</span></span></label>
+    </fieldset>
+    <p id="access-extra" class="muted small" hidden></p>
+    <ul id="access-links" class="links" aria-label="Open it at"></ul>
+    <p id="access-reason" class="muted small"></p>
+    <p id="access-err" class="err small" role="alert"></p>
+    <div class="dlg-actions">
+      <button class="btn btn-quiet" value="close" type="submit">Close</button>
+      <button id="access-save" class="btn btn-primary" type="button">Save</button>
+    </div>
+  </form>
+</dialog>
 
 <script src="/static/treemap.js"></script>
 <script src="/static/app.js"></script>

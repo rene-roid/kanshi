@@ -197,6 +197,7 @@ main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid;
 .scan-progress p { margin: 5px 0 0; }
 
 .rootbar, .sortbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.sortbar[hidden] { display: none; }
 .chip {
   font: inherit; font-size: 12px; padding: 5px 11px; min-height: 30px;
   border-radius: 999px; border: 1px solid var(--border);
@@ -318,6 +319,33 @@ main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid;
 tr.is-stopped { opacity: .55; }
 
 .foot { display: flex; justify-content: space-between; align-items: center; padding: 0 4px; }
+.foot-actions { display: flex; gap: 2px; }
+.access-line { margin: -8px 4px 0; overflow-wrap: anywhere; }
+.access-line:empty { display: none; }
+
+/* ── Network dialog ──────────────────────────────────────────────────────── */
+.dlg {
+  width: min(430px, calc(100vw - 24px)); padding: 18px;
+  border: 1px solid var(--border); border-radius: 14px;
+  background: var(--surface-1); color: var(--text-primary);
+}
+.dlg::backdrop { background: rgba(0, 0, 0, .4); }
+.dlg h2 { margin: 0 0 4px; font-size: 15px; font-weight: 620; }
+.dlg p { margin: 6px 0; }
+.dlg fieldset { border: 0; padding: 0; margin: 14px 0 10px; display: grid; gap: 12px; }
+.dlg fieldset[disabled] { opacity: .6; }
+.dlg label { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; cursor: pointer; }
+.dlg label > span { display: grid; gap: 1px; }
+.dlg label b { font-weight: 600; }
+.dlg input[type="checkbox"] { margin: 2px 0 0; width: 16px; height: 16px; flex: none; accent-color: var(--series-1); }
+.dlg .links { list-style: none; margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid var(--gridline); display: grid; gap: 4px; font-size: 12px; }
+.dlg .links:empty { display: none; }
+.dlg .links a { color: var(--series-1); overflow-wrap: anywhere; }
+.dlg .links .k { display: inline-block; min-width: 96px; margin-right: 8px; color: var(--text-muted); }
+.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.btn-primary { background: var(--series-1); border-color: transparent; color: #fff; }
+.err { margin: 0; color: var(--status-critical); }
+.err:empty { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

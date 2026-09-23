@@ -1,3 +1,3 @@
-module github.com/yuuki824/kanshi
+module github.com/rene-roid/kanshi
 
-go 1.22
+go 1.25
