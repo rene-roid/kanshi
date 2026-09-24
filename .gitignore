@@ -3,6 +3,10 @@
 .env.*
 !.env.example
 
+# Local Compose overrides — picked up automatically by `docker compose up`,
+# never meant to be shared.
+docker-compose.override.yml
+
 # Node.js and npm
 node_modules/
 npm-debug.log*
