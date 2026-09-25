@@ -15,7 +15,9 @@ go build -o "$bin" .
 mkdir -p "$root/folder"
 head -c 1048576 /dev/urandom > "$root/folder/blob.bin"
 
+rm -f "$tmp"/kanshi-smoke.cache*
 KANSHI_PORT=$port KANSHI_STORAGE_ROOTS="$root" KANSHI_CONFIG="$tmp/kanshi-smoke.env" \
+  KANSHI_STORAGE_CACHE="$tmp/kanshi-smoke.cache" \
   "$bin" -open=false > smoke.log 2>&1 &
 pid=$!
 trap 'kill $pid 2>/dev/null || true; echo "--- kanshi output"; cat smoke.log' EXIT
@@ -33,14 +35,17 @@ grep -q '"count":[1-9]' vitals.json          # found CPU cores
 grep -q '"memory":{"total":[1-9]' vitals.json # and memory
 
 echo "--- storage"
+# The first listing queues the folder to be sized; later ones pick the size up.
 for _ in $(seq 1 30); do
-  curl -fsS "$url/api/storage" > storage.json
-  grep -q '"size":[1-9]' storage.json && break
+  curl -fsS "$url/api/storage/dir?root=0&path=" > storage.json
+  grep -q '"pending":0' storage.json && break
   sleep 1
 done
 cat storage.json; echo
-grep -q '"size":[1-9]' storage.json
+grep -q '"name":"folder","size":[1-9]' storage.json
 curl -fsS "$url/api/storage/dir?root=0&path=folder" | grep -q '"file_count":1'
+curl -fsS "$url/api/storage" | grep -q '"size":[1-9]'
+test -s "$tmp/kanshi-smoke.cache"
 
 echo "--- page"
 curl -fsS "$url/" | grep -q 'app.js?v='

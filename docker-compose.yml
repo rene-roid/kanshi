@@ -29,7 +29,9 @@ services:
 
       # Storage map. "auto" is the host's / plus every drive mounted under /mnt.
       KANSHI_STORAGE_ROOTS: "${KANSHI_STORAGE_ROOTS:-auto}"
-      KANSHI_STORAGE_INTERVAL: "${KANSHI_STORAGE_INTERVAL:-1800}"
+      # A cached folder size older than this many seconds is measured again
+      # the next time the folder around it is opened.
+      KANSHI_STORAGE_INTERVAL: "${KANSHI_STORAGE_INTERVAL:-21600}"
       # Host paths to skip. /var/lib/docker is ~100k overlay2 files and
       # dominates the walk time — set it here to trim the walk.
       KANSHI_STORAGE_EXCLUDE: "${KANSHI_STORAGE_EXCLUDE:-}"
@@ -51,6 +53,9 @@ services:
       # The whole host, read-only. rslave lets a drive mounted under /mnt after
       # the container started show up here too, without a restart.
       - /:/hostfs:ro,rslave
+      # The folder size cache, so a restart or an update does not walk the
+      # disk again.
+      - kanshi-data:/data
 
     read_only: true
     tmpfs:
@@ -74,3 +79,6 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  kanshi-data:

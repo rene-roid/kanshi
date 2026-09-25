@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/rene-roid/kanshi/internal/config"
 	"github.com/rene-roid/kanshi/internal/roots"
@@ -38,7 +39,7 @@ func write(t *testing.T, path string, size int) {
 //
 //	root/big.bin, root/link.bin (a hard link to big.bin)
 //	root/a/a.bin, root/a/b/c/d/e/deep.bin
-//	root/nested/n.bin   — configured as a root of its own
+//	root/nested/n.bin
 //	root/skip/s.bin     — excluded
 func fixture(t *testing.T) string {
 	root := t.TempDir()
@@ -56,84 +57,247 @@ func fixture(t *testing.T) string {
 	return root
 }
 
-func scanner(root string, rootsSpec ...string) *Scanner {
-	cfg := config.Config{
-		TreeDepth:      2,
-		StorageCPU:     100,
-		StorageExclude: []string{filepath.Join(root, "skip")},
+func testConfig(root, db string) config.Config {
+	return config.Config{
+		TreeDepth:        2,
+		StorageCPU:       100,
+		StorageExclude:   []string{filepath.Join(root, "skip")},
+		StorageInterval:  time.Hour,
+		StorageMinRescan: time.Hour,
+		StorageCache:     db,
 	}
-	return New(cfg, roots.NewResolver(rootsSpec, ""))
 }
 
-func TestWalk(t *testing.T) {
+func scanner(t *testing.T, root string, rootsSpec ...string) *Scanner {
+	t.Helper()
+	s := New(testConfig(root, ""), roots.NewResolver(rootsSpec, ""), t.Logf)
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+// list reads a folder, walks whatever it queued, and reads it again.
+func list(t *testing.T, s *Scanner, root int, rel string) Listing {
+	t.Helper()
+	if _, ok := s.List(root, rel); !ok {
+		t.Fatalf("no root %d", root)
+	}
+	s.drain(context.Background())
+	l, _ := s.List(root, rel)
+	if l.Pending != 0 {
+		t.Fatalf("%q still has %d pending after the queue drained", rel, l.Pending)
+	}
+	return l
+}
+
+func dirSizes(l Listing) map[string]int64 {
+	out := map[string]int64{}
+	for _, d := range l.Dirs {
+		out[d.Name] = d.Size
+	}
+	return out
+}
+
+func TestListSizesSubfoldersInTheBackground(t *testing.T) {
 	root := fixture(t)
 	// Windows only de-duplicates hard links inside its system directory.
 	old := systemRoot
 	systemRoot = func() string { return root }
 	defer func() { systemRoot = old }()
+	s := scanner(t, root, root)
 
-	s := scanner(root, root, filepath.Join(root, "nested"))
-	snap := s.Scan(context.Background(), true)
-	if snap.Error != nil {
-		t.Fatal(*snap.Error)
+	first, _ := s.List(0, "")
+	if first.Pending != 2 || len(first.Dirs) != 2 {
+		t.Fatalf("first listing = %+v, want a and nested pending and skip left out", first)
 	}
-	if len(snap.Roots) != 2 {
-		t.Fatalf("roots = %+v", snap.Roots)
+	if first.Size != first.FileBytes {
+		t.Errorf("pending folders should add nothing yet: %+v", first)
 	}
-
-	want := int64(sizeBig + sizeA + sizeDeep + sizeNested) // link.bin once, skip/ never
-	if got := snap.Roots[0].Size; got != want {
-		t.Errorf("root size = %d, want %d", got, want)
+	if st := s.Status(); !st.Scanning || st.Queued != 2 {
+		t.Errorf("status = %+v, want two walks queued", st)
 	}
-	if got := snap.Roots[1].Size; got != sizeNested {
-		t.Errorf("nested root size = %d, want %d", got, sizeNested)
-	}
-	if s.views[1].t != s.views[0].t {
-		t.Error("the nested root should come out of the outer root's walk, not a second one")
+	if snap := s.Snapshot(); snap.Roots[0].Size != nil {
+		t.Error("the root has no size until every folder in it does")
 	}
 
-	top, _ := s.List(0, "")
-	names := map[string]bool{}
-	for _, d := range top.Dirs {
-		names[d.Name] = true
+	top := list(t, s, 0, "")
+	got := dirSizes(top)
+	if got["a"] != sizeA+sizeDeep || got["nested"] != sizeNested || len(got) != 2 {
+		t.Errorf("dirs = %v", got)
 	}
-	if !names["a"] || !names["nested"] || names["skip"] {
-		t.Errorf("top-level dirs = %+v", top.Dirs)
+	if top.Dirs[0].Name != "a" {
+		t.Errorf("dirs should be largest first: %+v", top.Dirs)
 	}
 	if top.FileBytes != sizeBig || top.FileCount != 1 {
-		t.Errorf("top-level files: %d bytes in %d files, want the hard link counted once", top.FileBytes, top.FileCount)
+		t.Errorf("files: %d bytes in %d files, want the hard link counted once", top.FileBytes, top.FileCount)
 	}
-
-	// Depth 2: a and a/b get listings; c, d and e roll up into a/b.
-	ab, _ := s.List(0, "a/b")
-	if ab.Deep != sizeDeep || len(ab.Dirs) != 0 {
-		t.Errorf("a/b = %+v, want %d deep bytes and no dirs", ab, sizeDeep)
+	want := int64(sizeBig + sizeA + sizeDeep + sizeNested)
+	if top.Size != want {
+		t.Errorf("size = %d, want %d", top.Size, want)
 	}
-	gone, ok := s.List(0, "a/b/c/d")
-	if !ok || !gone.Partial || gone.Path != "a/b" {
-		t.Errorf("below the depth resolves to the deepest listing: %+v", gone)
+	if top.SizedAt == nil {
+		t.Error("sized_at should say when the sizes were measured")
 	}
-	n, _ := s.List(1, "")
-	if n.FileBytes != sizeNested {
-		t.Errorf("nested root listing = %+v", n)
+	if snap := s.Snapshot(); snap.Roots[0].Size == nil || *snap.Roots[0].Size != want {
+		t.Errorf("root summary = %+v", snap.Roots[0])
 	}
-
-	if s.stale() {
-		t.Error("nothing changed since the walk, so it should not be stale")
+	if st := s.Status(); st.Scanning || st.UpdatedAt == nil {
+		t.Errorf("status after the walks = %+v", st)
 	}
 }
 
-func TestSymlinksAreNotFollowed(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("covered by the junction test")
-	}
+func TestDrillingPastTheCachedDepthWalksOnDemand(t *testing.T) {
 	root := fixture(t)
-	if err := os.Symlink(filepath.Join(root, "a"), filepath.Join(root, "loop")); err != nil {
+	s := scanner(t, root, root)
+	list(t, s, 0, "")
+
+	// Walking a cached a, a/b and a/b/c (TreeDepth 2), so those open at once.
+	ab, _ := s.List(0, "a/b")
+	if ab.Pending != 0 || dirSizes(ab)["c"] != sizeDeep {
+		t.Errorf("a/b = %+v", ab)
+	}
+	abc, _ := s.List(0, "a/b/c")
+	if abc.Pending != 1 {
+		t.Errorf("a/b/c/d is below the cached depth and should be pending: %+v", abc)
+	}
+	abc = list(t, s, 0, "a/b/c")
+	if dirSizes(abc)["d"] != sizeDeep {
+		t.Errorf("a/b/c = %+v", abc)
+	}
+}
+
+func TestPathsOnlyReachWhatAWalkWould(t *testing.T) {
+	root := fixture(t)
+	s := scanner(t, root, root)
+	for rel, want := range map[string]string{
+		"a/nope/x": "a",
+		"../..":    "",
+		"a/../..":  "a",
+		"skip":     "",
+	} {
+		l, ok := s.List(0, rel)
+		if !ok || !l.Partial || l.Path != want {
+			t.Errorf("%q resolved to %+v, want partial at %q", rel, l, want)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Symlink(filepath.Join(root, "a"), filepath.Join(root, "loop")); err != nil {
+			t.Fatal(err)
+		}
+		if l, _ := s.List(0, "loop"); !l.Partial {
+			t.Errorf("a symlink was followed: %+v", l)
+		}
+		if _, ok := dirSizes(list(t, s, 0, ""))["loop"]; ok {
+			t.Error("a symlink was listed as a folder")
+		}
+	}
+	if _, ok := s.List(5, ""); ok {
+		t.Error("an unknown root should report false")
+	}
+}
+
+func TestSizesSurviveARestart(t *testing.T) {
+	root := fixture(t)
+	db := filepath.Join(t.TempDir(), "cache", "storage.cache")
+	r := roots.NewResolver([]string{root}, "")
+
+	s := New(testConfig(root, db), r, t.Logf)
+	want := list(t, s, 0, "").Size
+	s.Close()
+
+	s = New(testConfig(root, db), r, t.Logf)
+	defer s.Close()
+	l, _ := s.List(0, "")
+	if l.Pending != 0 || l.Size != want {
+		t.Errorf("after reopening: %+v, want everything sized at %d", l, want)
+	}
+	if st := s.Status(); st.Scanning {
+		t.Errorf("nothing should be walked again: %+v", st)
+	}
+}
+
+func TestStaleAndRescannedFoldersAreWalkedAgain(t *testing.T) {
+	root := fixture(t)
+	s := scanner(t, root, root)
+	list(t, s, 0, "")
+
+	write(t, filepath.Join(root, "a", "more.bin"), sizeA)
+	if l, _ := s.List(0, ""); dirSizes(l)["a"] != sizeA+sizeDeep || s.Status().Scanning {
+		t.Error("a fresh size should be served from the cache without a walk")
+	}
+
+	// Rescan skips folders sized within StorageMinRescan...
+	if st, _ := s.Rescan(0, ""); st.Queued != 0 {
+		t.Errorf("rescan queued %d folders that were just sized", st.Queued)
+	}
+	// ...and a size older than StorageInterval is walked when it is shown.
+	s.cfg.StorageInterval = time.Nanosecond
+	if l, _ := s.List(0, ""); l.Pending != 0 {
+		t.Errorf("a stale size should still be shown while it is refreshed: %+v", l)
+	}
+	if st := s.Status(); st.Queued != 2 {
+		t.Errorf("status = %+v, want both folders queued", st)
+	}
+	s.drain(context.Background())
+	s.cfg.StorageInterval = time.Hour
+	if l, _ := s.List(0, ""); dirSizes(l)["a"] != 2*sizeA+sizeDeep {
+		t.Errorf("a = %d after the refresh", dirSizes(l)["a"])
+	}
+
+	s.cfg.StorageMinRescan = 0
+	if st, _ := s.Rescan(0, ""); st.Queued != 2 {
+		t.Errorf("rescan queued %d, want 2", st.Queued)
+	}
+}
+
+func TestRemovedFoldersAreForgotten(t *testing.T) {
+	root := fixture(t)
+	s := scanner(t, root, root)
+	list(t, s, 0, "")
+	aKey := roots.Key(filepath.Join(root, "a"))
+	if _, ok := s.cache.get(joinKey(aKey, "b")); !ok {
+		t.Fatal("the walk of a should have cached a/b")
+	}
+
+	if err := os.RemoveAll(filepath.Join(root, "a")); err != nil {
 		t.Fatal(err)
 	}
-	snap := scanner(root, root).Scan(context.Background(), true)
-	if want := int64(sizeBig + sizeA + sizeDeep + sizeNested); snap.Roots[0].Size != want {
-		t.Errorf("size = %d, want %d", snap.Roots[0].Size, want)
+	if _, ok := dirSizes(list(t, s, 0, ""))["a"]; ok {
+		t.Error("a is gone but still listed")
+	}
+	if _, ok := s.cache.get(joinKey(aKey, "b")); ok {
+		t.Error("a is gone but its subfolders are still cached")
+	}
+
+	// Recreated under the same name, it is sized afresh.
+	write(t, filepath.Join(root, "a", "new.bin"), sizeNested)
+	if l, _ := s.List(0, ""); l.Pending != 1 {
+		t.Errorf("a recreated folder should be pending: %+v", l)
+	}
+}
+
+func TestWalksLeaveOtherRootsCached(t *testing.T) {
+	root := fixture(t)
+	inner := filepath.Join(root, "a", "b")
+	s := scanner(t, root, root, inner)
+	// Excluded from walks, a/b is what a drive mounted there would be: its
+	// own root, and not a subfolder of a.
+	s.cfg.StorageExclude = append(s.cfg.StorageExclude, inner)
+	list(t, s, 1, "")
+	list(t, s, 1, "c")
+	deep := roots.Key(filepath.Join(inner, "c", "d", "e"))
+	if _, ok := s.cache.get(deep); !ok {
+		t.Fatal("walking a/b/c/d should have cached a/b/c/d/e")
+	}
+
+	// Walking a, and then listing it without b in it, must leave everything
+	// the other root knows alone.
+	list(t, s, 0, "")
+	list(t, s, 0, "a")
+	if _, ok := s.cache.get(deep); !ok {
+		t.Error("walking a dropped what the a/b root had cached")
+	}
+	if snap := s.Snapshot(); snap.Roots[1].Size == nil {
+		t.Error("walking a dropped the a/b root's own size")
 	}
 }
 
@@ -146,19 +310,95 @@ func TestUnreadableDirectoriesAreCounted(t *testing.T) {
 	os.Chmod(locked, 0)
 	defer os.Chmod(locked, 0o755)
 
-	snap := scanner(root, root, filepath.Join(root, "nested")).Scan(context.Background(), true)
-	if snap.Roots[0].Unreadable != 1 {
-		t.Errorf("unreadable = %d, want 1", snap.Roots[0].Unreadable)
+	s := scanner(t, root, root)
+	if top := list(t, s, 0, ""); top.Unreadable != 1 {
+		t.Errorf("unreadable = %d, want 1", top.Unreadable)
 	}
-	if snap.Roots[1].Unreadable != 0 {
-		t.Errorf("the nested root does not contain the locked dir: %d", snap.Roots[1].Unreadable)
+	if a, _ := s.List(0, "a"); a.Unreadable != 1 {
+		t.Errorf("unreadable in a = %d, want 1", a.Unreadable)
+	}
+	if l, _ := s.List(0, "a/b"); !l.Partial || l.Path != "a" {
+		t.Errorf("an unreadable folder resolves to its parent: %+v", l)
 	}
 }
 
 func TestMissingRootIsLeftOut(t *testing.T) {
 	root := fixture(t)
-	snap := scanner(root, filepath.Join(root, "nope"), root).Scan(context.Background(), true)
+	snap := scanner(t, root, filepath.Join(root, "nope"), root).Snapshot()
 	if len(snap.Roots) != 1 || snap.Roots[0].Path != root {
 		t.Errorf("roots = %+v", snap.Roots)
+	}
+}
+
+func TestQueueLeavesNestedFoldersToTheOuterWalk(t *testing.T) {
+	s := scanner(t, t.TempDir())
+	j := func(p string) job { return job{path: p, key: roots.Key(p)} }
+	keys := func() []string {
+		var out []string
+		for _, q := range s.queue {
+			out = append(out, q.path)
+		}
+		return out
+	}
+	x, xa, y := filepath.Join("/x"), filepath.Join("/x", "a"), filepath.Join("/y")
+
+	s.enqueue([]job{j(xa), j(y)}, false)
+	s.enqueue([]job{j(x)}, false)
+	if got := keys(); len(got) != 2 || got[0] != y || got[1] != x {
+		t.Errorf("queue = %v, want x to replace x/a", got)
+	}
+	s.enqueue([]job{j(xa)}, true)
+	if got := keys(); len(got) != 2 || got[0] != x {
+		t.Errorf("queue = %v, want x moved to the front for x/a", got)
+	}
+}
+
+func TestDeleteSubtreeLeavesSiblingsAndOtherRoots(t *testing.T) {
+	c, _ := openCache("")
+	sep := roots.Sep
+	base := filepath.Join(string(filepath.Separator), "data")
+	b := base + sep + "b"
+	paths := []string{
+		// Removed along with b.
+		b, b + sep + "c", b + sep + "c" + sep + "d",
+		// Siblings whose names start the same way.
+		base, base + sep + "b.x", base + sep + "b0", base + sep + "b0" + sep + "e", base + sep + "bc",
+		// Another root inside b, and what is cached under it.
+		b + sep + "mnt", b + sep + "mnt" + sep + "f", b + sep + "mnt" + sep + "f" + sep + "g",
+	}
+	for _, p := range paths {
+		c.put(roots.Key(p), sized{size: 1, at: time.Now()})
+	}
+	c.mu.Lock()
+	c.deleteSubtree(roots.Key(b), []string{roots.Key(b + sep + "mnt")})
+	c.mu.Unlock()
+	for i, p := range paths {
+		if _, ok := c.get(roots.Key(p)); ok == (i < 3) {
+			t.Errorf("%s: cached = %v", p, ok)
+		}
+	}
+}
+
+func TestAnUnusableCacheFileStartsEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "storage.cache")
+	if err := os.WriteFile(path, []byte("not a cache"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := openCache(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.dirs) != 0 {
+		t.Errorf("dirs = %v", c.dirs)
+	}
+	c.put(roots.Key(filepath.Join(string(filepath.Separator), "x")), sized{size: 7, at: time.Now()})
+	if err := c.close(); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ = openCache(path); len(c.dirs) != 1 {
+		t.Errorf("the rewritten cache did not load back: %v", c.dirs)
+	}
+	if matches, _ := filepath.Glob(path + ".*"); len(matches) != 0 {
+		t.Errorf("temporary files left behind: %v", matches)
 	}
 }

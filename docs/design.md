@@ -10,18 +10,47 @@ After `KANSHI_IDLE_TIMEOUT` (30 s) with no browser attached, the live poller sto
 no Docker API calls. It sleeps until a page connects again, then takes a one-second baseline so the first numbers
 it shows are real rather than zeros.
 
-The storage scan follows the same rule. It walks every root once at startup, so the first visit has a map. After
-that, a rescan only happens while someone has the page open, and only when it would show something new: the
-scheduler compares each volume's used space against the last scan and skips the walk if nothing moved by more than
-0.5% (or 256 MB, whichever is larger). Six hours is the most a watched map is allowed to age, because moving files
-around inside a volume changes the map without changing used space. A drive mounted or removed triggers a scan the
-next time someone is watching.
+The storage map follows the same rule, one folder at a time. Nothing is walked at startup. Opening a folder reads
+that one directory, and each subfolder's size comes from a small cache file. Only a subfolder the cache has
+never seen, or has not measured for `KANSHI_STORAGE_INTERVAL` (six hours), is walked, and only its own subtree.
+Only the folder someone opened is ever refreshed, so a disk nobody is looking at is never read.
 
 This matters more than it sounds. On the homeserver this was written for, the previous version scanned every
 30 minutes whether or not anyone was watching: each scan read ~2.8 GB of directory metadata from disk (the 96 MB
 memory limit lets the kernel drop that cache between scans) and used ~42 CPU-seconds. That added up to ~130 GB of
 disk reads and half an hour of CPU a day, for nobody. Now an unwatched kanshi reads nothing from disk, and used
 88 ms of CPU over two measured minutes.
+
+Moving from one whole-disk walk to per-folder walks took the rest of the waste out. Every restart or image update
+used to cost a full 100-second walk before the map was back. Now the cache survives it: after a restart, the
+1.6 TB `/mnt/data` listing came back fully sized in 2 ms, with nothing walked.
+
+## Folder sizes live in a small cache file
+
+A folder's size needs everything under it read, so a plain directory listing is not enough on its own. The listing
+is live (names, files and their sizes are always current), and the subfolder sizes are the cached part: one entry
+per folder, grouped by parent so a folder's subfolders are a single map lookup. Opening a folder is one directory
+read and that lookup, ~1 ms on the homeserver.
+
+A walk records every folder within `KANSHI_TREE_DEPTH` levels of where it started, so drilling further in is
+usually instant. It first drops everything cached below its starting point, so nothing older than the walk
+survives under it. The exception is another configured root: `/mnt/data` sits under `/` but is its own filesystem,
+and a walk of `/mnt` must not wipe it. A folder deeper than any walk reached has no entry. It is walked when it is
+opened, so there is no depth limit on drilling in. A listing that finds a cached subfolder gone forgets it and
+everything under it.
+
+Walks go through one queue on one low-priority thread. The folders a listing is waiting on go to the front, stale
+ones to the back. A folder inside one that is already queued or being walked is left to that walk, and the page
+shows it as "sizing…" until then. Each finished walk bumps a timestamp on the live stream, which is the page's cue
+to re-read the folder on screen.
+
+The whole cache sits in memory (a few thousand entries for all of `/` on the homeserver) and goes to disk as one
+`encoding/gob` file after each walk: written to a temporary file, then renamed over the old one, so a crash
+mid-write leaves the previous cache intact. Nothing here needs a database. A folder's own subfolders are the only
+query, and one walk at a time is the only writer, so a map and a file do the job with no dependency. A file that is
+missing, unreadable or from another version is simply started over. It lives in the user's cache folder, `/data`
+in the image (a volume, since the root filesystem is read-only), or the systemd unit's `CacheDirectory`. If it
+cannot be written, kanshi logs it and keeps sizes in memory instead.
 
 ## Listening decides who can connect
 
@@ -73,15 +102,11 @@ drive.
 
 ## The disk walk is breadth-first and depth-bounded
 
-It goes one level at a time, so the folders you can drill into are all finished before the deep, bulky part of the
-tree starts. Only directories within `KANSHI_TREE_DEPTH` of their root get a node of their own — ~2.3k instead of
-~96k on the homeserver. Deeper directories are still fully traversed and counted; their bytes roll up into the
-nearest kept ancestor. Sizes are space on disk (`st_blocks` on Linux, the allocation size on Windows), so they
-match `du` rather than apparent size, and hard-linked files are counted once.
-
-A root inside another root on the same filesystem — `C:\` and `C:\Users\you` by default on Windows — is not walked
-twice. The outer walk picks it up on the way past and restarts the depth count there, so it gets full detail of its
-own at no extra cost.
+It goes one level at a time, so the folders that get cached are all finished before the deep, bulky part of the
+tree starts. Only directories within `KANSHI_TREE_DEPTH` of where the walk started get a node of their own — ~2.3k
+instead of ~96k for all of `/` on the homeserver. Deeper directories are still fully traversed and counted; their
+bytes roll up into the nearest kept ancestor. Sizes are space on disk (`st_blocks` on Linux, the allocation size on
+Windows), so they match `du` rather than apparent size, and hard-linked files are counted once per walk.
 
 **The walk barely allocates.** On Linux, entries are parsed straight out of the `getdents64` buffer and stat'ed with
 `fstatat` relative to the open directory, so the kernel resolves one path component rather than the whole path. On

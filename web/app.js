@@ -287,20 +287,17 @@
   });
 
   /* ── storage ────────────────────────────────────────────────────────── */
-  // The server holds the whole walk; the page only ever has one directory of
-  // it. /api/storage is a one-line summary per root, and each directory is
-  // fetched from /api/storage/dir as it is opened — a few KB instead of the
-  // entire tree on every load.
+  // The page only ever has one directory. /api/storage is a one-line summary
+  // per root, and each directory is read from /api/storage/dir as it is
+  // opened. Subfolders the server has not sized yet come back pending; it
+  // walks them in the background, and the live stream says when one is done.
   const svg = $("#treemap");
-  let storage = null;     // scan status plus one summary per root
-  let scanStamp;          // the scan the cached listings belong to
+  let storage = null;     // walk queue status plus one summary per root
   let rootIndex = 0;
   let segs = [];          // path below the root, one directory name per level
   let listing = null;     // the directory on screen
   let items = [];         // its contents as rendered, largest first
   let navToken = 0;       // drops a slow response that a newer click overtook
-  const listings = new Map();   // "root/path" → listing, current scan only
-  const LISTING_CACHE = 64;
 
   // The table starts short and grows on request. The treemap always covers the
   // whole directory, but slivers too thin to see or tap share one tile.
@@ -315,11 +312,11 @@
   }
 
   // Everything in the current directory. Files are either named one by one or
-  // collapsed into a single entry, and whatever the walk counted but did not
-  // name gets an aggregate of its own, so the parts always add up.
+  // collapsed into a single entry, so the parts always add up. Pending folders
+  // have no size yet and sort last.
   function viewItems() {
     const l = listing;
-    const out = l.dirs.map((d) => ({ name: d.name, size: d.size, kind: "dir" }));
+    const out = l.dirs.map((d) => ({ name: d.name, size: d.size, kind: "dir", pending: !!d.pending }));
     if (showFiles) {
       let named = 0;
       l.files.forEach((f) => { out.push({ name: f.name, size: f.size, kind: "file" }); named += f.size; });
@@ -328,20 +325,20 @@
     } else if (l.file_bytes > 0) {
       out.push({ name: plural(l.file_count, "file"), size: l.file_bytes, kind: "rest", files: true });
     }
-    if (l.deep > 0) out.push({ name: "deeper subfolders", size: l.deep, kind: "rest" });
-    return out.sort((a, b) => b.size - a.size);
+    return out.sort((a, b) => (a.pending - b.pending) || (b.size - a.size));
   }
 
-  // items is sorted, so everything below the cut is a suffix of it.
+  // Sized items are sorted, so everything below the cut is a suffix of them.
   function tileItems(total) {
+    const sized = items.filter((d) => !d.pending);
     const floor = total * TILE_MIN_SHARE;
     let keep = 0;
-    while (keep < items.length && keep < TILE_MAX && items[keep].size >= floor) keep++;
-    if (items.length - keep <= 1) return items;
+    while (keep < sized.length && keep < TILE_MAX && sized[keep].size >= floor) keep++;
+    if (sized.length - keep <= 1) return sized;
     let folded = 0;
-    for (let i = keep; i < items.length; i++) folded += items[i].size;
-    return items.slice(0, keep).concat([{
-      name: plural(items.length - keep, "smaller item"), size: folded, kind: "rest", smaller: true,
+    for (let i = keep; i < sized.length; i++) folded += sized[i].size;
+    return sized.slice(0, keep).concat([{
+      name: plural(sized.length - keep, "smaller item"), size: folded, kind: "rest", smaller: true,
     }]);
   }
 
@@ -353,22 +350,20 @@
     else if (d.smaller) { shown = items.length; renderTable(); $("#stor-tbl").scrollIntoView({ block: "nearest" }); }
   }
 
+  function dirQuery(root, path) {
+    return "root=" + root + "&path=" + encodeURIComponent(path.join("/"));
+  }
+
   async function navigate(root, path, keepShown) {
     const token = ++navToken;
-    const rel = path.join("/");
-    const key = root + "/" + rel;
-    let l = listings.get(key);
-    if (!l) {
-      try {
-        const res = await fetch("/api/storage/dir?root=" + root + "&path=" + encodeURIComponent(rel));
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        l = await res.json();
-      } catch (err) {
-        if (token === navToken) $("#tm-focus").textContent = "Could not load that folder — try again.";
-        return;
-      }
-      if (listings.size >= LISTING_CACHE) listings.delete(listings.keys().next().value);
-      listings.set(key, l);
+    let l;
+    try {
+      const res = await fetch("/api/storage/dir?" + dirQuery(root, path));
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      l = await res.json();
+    } catch (err) {
+      if (token === navToken) $("#tm-focus").textContent = "Could not load that folder — try again.";
+      return;
     }
     if (token !== navToken) return;
     if (root !== rootIndex) renderRootBar(root);
@@ -378,12 +373,20 @@
     if (!keepShown) shown = PAGE;
     drawView();
     $("#tm-focus").textContent = l.partial
-      ? "That folder is gone or below the scan depth — showing the closest one that is still there."
-      : "Tap a block to drill in.";
+      ? "That folder is gone or can't be opened — showing the closest one that is still there."
+      : l.pending
+        ? "Sizing " + plural(l.pending, "folder") + " — the map fills in as each one is done."
+        : "Tap a block to drill in.";
+    // The server has just queued those folders. Say so now rather than at the
+    // next live frame, which brings the details.
+    if (l.pending && storage && !storage.scanning) {
+      storage.scanning = true;
+      renderScanStatus();
+    }
   }
 
-  // Pinned custom paths: bookmarks into the already-scanned tree, so adding one
-  // can never reach outside what was walked.
+  // Pinned custom paths: bookmarks under a root. The server resolves them the
+  // way a walk would, so one can never reach outside the roots.
   const PIN_KEY = "kanshi-pins";
   function loadPins() {
     try { return JSON.parse(localStorage.getItem(PIN_KEY)) || []; } catch (e) { return []; }
@@ -469,7 +472,7 @@
   function renderRootBar(active) {
     const rootChips = storage.roots.map((r, i) =>
       '<button role="tab" class="chip' + (i === active ? " is-on" : "") + '" data-root="' + i + '" type="button" aria-selected="' +
-      (i === active) + '">' + escapeHtml(r.name) + " · " + bytes(r.size) + "</button>").join("");
+      (i === active) + '">' + escapeHtml(r.name) + (r.size == null ? "" : " · " + bytes(r.size)) + "</button>").join("");
     const pinChips = pins.map((p, i) => {
       const label = escapeHtml(p.label);
       return '<span class="chip pin" data-pin="' + i + '">' +
@@ -510,8 +513,6 @@
   });
 
   function emptyStorage(message) {
-    // The first walk can take a few minutes on a big filesystem. Say so,
-    // rather than leaving a blank box that reads as broken.
     listing = null;
     items = [];
     $("#rootbar").innerHTML = "";
@@ -523,36 +524,31 @@
     $("#stor-meta").textContent = "";
   }
 
-  // There is nothing to compare against on the very first walk ever — no
-  // previous byte totals — so the server omits `progress` rather than
-  // shipping a meaningless 0%. The bar only appears once there is a real
-  // percentage to show.
+  // A folder walked for the first time has no previous size to measure
+  // against, so the server omits `progress` rather than shipping a
+  // meaningless 0%; the bar then only names what is being walked.
   function renderScanStatus() {
     const bar = $("#scan-progress");
-    const p = storage && storage.progress;
-    const scanning = !!(storage && storage.scanning);
-    if (!scanning || !p) {
-      bar.hidden = true;
-    } else {
-      bar.hidden = false;
-      $("#scan-progress-fill").style.width = Math.min(100, p.percent) + "%";
-      $("#scan-progress-label").textContent =
-        "Scanning " + p.root + "… " + p.percent.toFixed(0) + "% · " + bytes(p.bytes_done) + " of " + bytes(p.bytes_total);
+    const st = storage || {};
+    bar.hidden = !st.scanning;
+    if (st.scanning) {
+      const p = st.progress;
+      $("#scan-progress-fill").style.width = (p ? Math.min(100, p.percent) : 0) + "%";
+      $("#scan-progress-label").textContent = "Sizing " + (st.current || "folders") + "…" +
+        (p ? " " + p.percent.toFixed(0) + "% · " + bytes(p.bytes_done) + " of " + bytes(p.bytes_total) : "") +
+        (st.queued ? " · " + st.queued + " more queued" : "");
     }
-    const btn = $("#rescan");
-    btn.disabled = scanning;
-    btn.textContent = scanning ? "Scanning…" : "Rescan";
     renderMeta();
   }
 
   function renderMeta() {
-    if (!storage || !storage.roots || !storage.roots.length || !listing) return;
-    const root = storage.roots[rootIndex];
-    const warn = root.unreadable
-      ? " · ⚠ " + plural(root.unreadable, "unreadable dir") + " not counted"
-      : "";
-    $("#stor-meta").textContent = "walked " + root.root + " in " + root.walk_seconds + "s · scanned " +
-      ago(storage.scanned_at) + (storage.scanning ? " · rescanning…" : "") + warn;
+    if (!listing) return;
+    const parts = [];
+    if (listing.pending) parts.push("sizing " + plural(listing.pending, "folder") + "…");
+    else if (listing.sized_at) parts.push("sized " + ago(listing.sized_at));
+    if (listing.unreadable) parts.push("⚠ " + plural(listing.unreadable, "unreadable dir") + " not counted");
+    if (storage && storage.error) parts.push("⚠ " + storage.error);
+    $("#stor-meta").textContent = parts.join(" · ");
   }
 
   function drawTreemap() {
@@ -586,8 +582,10 @@
       html += "<tr" + (tappable ? ' class="tap" data-i="' + i + '"' : "") + ">" +
         '<td><div class="name-cell"><span class="g" aria-hidden="true">' + glyph + "</span><span>" +
         escapeHtml(d.name) + "</span></div></td>" +
-        '<td class="num">' + bytes(d.size) + "</td>" +
-        '<td class="num">' + share.toFixed(1) + "%</td></tr>";
+        (d.pending
+          ? '<td class="num muted">sizing…</td><td class="num muted">—</td></tr>'
+          : '<td class="num">' + bytes(d.size) + "</td>" +
+            '<td class="num">' + share.toFixed(1) + "%</td></tr>");
     }
     $("#stor-tbl").querySelector("tbody").innerHTML = html || '<tr><td colspan="3" class="muted">Empty</td></tr>';
 
@@ -642,37 +640,34 @@
     $("#pinform-input").placeholder = windowsPaths() ? "C:\\Users\\you\\Downloads" : "/mnt/data/media/movies";
     renderScanStatus();
     if (!snap.roots || !snap.roots.length) {
-      emptyStorage(snap.error
-        ? "Scan failed: " + snap.error
-        : "Walking the filesystem for the first time — this can take a few minutes.");
+      emptyStorage("No storage roots found.");
       return;
     }
-    if (snap.scanned_at !== scanStamp) { scanStamp = snap.scanned_at; listings.clear(); }
     if (rootIndex >= snap.roots.length) { rootIndex = 0; segs = []; }
     renderRootBar(rootIndex);
-    // Re-open the same folder on the fresh walk, so a background rescan
-    // doesn't kick the user back to the root while they're drilling around.
+    // Re-read the same folder, so a walk finishing in the background fills in
+    // its sizes without kicking the user back to the root.
     await navigate(rootIndex, segs, true);
   }
 
-  // Every live frame carries the scan status, so the progress bar moves without
-  // any polling, and the map itself is only refetched once a walk completes.
+  // Every live frame carries the walk queue's status, so the progress bar
+  // moves without any polling, and the folder on screen is only re-read once
+  // a walk completes.
   function onScanStatus(st) {
     if (!storage) return;   // the first load is still in flight and will carry this
-    const finished = st.scanned_at !== storage.scanned_at || (st.error || null) !== (storage.error || null);
-    storage.scanning = st.scanning;
-    storage.progress = st.progress;
-    storage.error = st.error;
+    const finished = st.updated_at !== storage.updated_at || (st.error || null) !== (storage.error || null);
+    ["scanning", "current", "queued", "progress", "updated_at", "error"].forEach((k) => { storage[k] = st[k]; });
     renderScanStatus();
     if (finished) loadStorage();
   }
 
-  // The rescan endpoint starts the walk in the background and returns at once
-  // (a full walk can run for minutes); the live stream carries it from there.
+  // Re-walks the subfolders of the folder on screen. The walks run in the
+  // background; the live stream carries them from there.
   $("#rescan").addEventListener("click", async () => {
     try {
-      const res = await fetch("/api/storage/rescan", { method: "POST", headers: { "X-Kanshi": "1" } });
-      onScanStatus(await res.json());
+      const res = await fetch("/api/storage/rescan?" + dirQuery(rootIndex, segs),
+        { method: "POST", headers: { "X-Kanshi": "1" } });
+      if (res.ok) onScanStatus(await res.json());
     } catch (err) { /* the next frame will say where things stand */ }
   });
 

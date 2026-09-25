@@ -38,6 +38,11 @@ COPY --from=build /kanshi /kanshi
 # host's drives under /hostfs/mnt on its own.
 ENV KANSHI_HOST_ROOT=/hostfs
 
+# Folder sizes are cached here so a restart does not walk the disk again. The
+# root filesystem is read-only, so this has to be a volume.
+ENV KANSHI_STORAGE_CACHE=/data/storage.cache
+VOLUME /data
+
 EXPOSE 8100
 
 # The probe is the binary itself: a scratch image has no curl to call. It asks

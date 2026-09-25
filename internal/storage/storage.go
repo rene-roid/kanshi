@@ -1,19 +1,20 @@
-// Package storage builds a Filelight-style directory size map.
+// Package storage builds a Filelight-style directory size map, one folder at
+// a time.
 //
-// The walk is one breadth-first pass per volume, run on a slow timer and
-// cached — never recomputed per refresh, and never while nobody is looking.
-// Sizes are what the files occupy on disk (st_blocks on Linux, the allocation
+// Opening a folder reads that one directory live, and takes each subfolder's
+// size from a small cache file. A subfolder the cache has never seen, or has
+// not seen for StorageInterval, is walked in the background: only that
+// subtree, and every folder the walk passes within TreeDepth levels is cached
+// too, so drilling further in is usually instant. Nothing is walked at
+// startup or for a page nobody has open, and the cache outlives restarts.
+//
+// Sizes are what files occupy on disk (st_blocks on Linux, the allocation
 // size on Windows), so they match `du` rather than apparent size, and
-// hardlinked files are counted once.
-//
-// The page never downloads the tree. It gets a one-line summary per root, then
-// asks for one directory's listing at a time as it is drilled into, which the
-// server answers from the cached walk without touching the disk.
+// hard-linked files are counted once per walk.
 package storage
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -27,48 +28,40 @@ import (
 	"github.com/rene-roid/kanshi/internal/roots"
 )
 
-const (
-	// A volume whose used space has moved less than this since the last walk
-	// is not walked again: the map would come out the same. The larger of the
-	// two wins, so a 16 TB array is not rescanned over a few gigabytes.
-	changeFloor = 256 << 20
-	changeShare = 0.005
-	// Past this age a watched map is walked regardless, since moving files
-	// around within a volume changes the map without changing used space.
-	maxAge = 6 * time.Hour
-)
-
 /* ── wire payload ───────────────────────────────────────────────────────── */
 
-// Status is the part of the snapshot that moves during a walk. It rides on
-// every live frame, so the page only refetches anything when ScannedAt
-// changes.
+// Status is the part of the snapshot that moves while folders are sized. It
+// rides on every live frame, so the page only refetches anything when
+// UpdatedAt changes.
 type Status struct {
-	ScannedAt *float64  `json:"scanned_at"`
-	Duration  *float64  `json:"duration"`
-	Scanning  bool      `json:"scanning"`
-	Progress  *Progress `json:"progress,omitempty"`
-	Error     *string   `json:"error"`
+	Scanning bool `json:"scanning"`
+	// The folder being walked, as the host knows it, and how many wait
+	// behind it.
+	Current  string    `json:"current,omitempty"`
+	Queued   int       `json:"queued"`
+	Progress *Progress `json:"progress,omitempty"`
+	// When the last walk finished.
+	UpdatedAt *float64 `json:"updated_at"`
+	Error     *string  `json:"error"`
 }
 
-// Progress is a live estimate of how far the in-flight walk has gotten,
-// measured against the byte totals from the previous completed scan. There is
-// nothing to compare against on the very first walk ever, so Progress is
+// Progress is a live estimate of how far the current walk has gotten,
+// measured against the folder's size the last time it was walked. A folder
+// walked for the first time has nothing to compare against, so Progress is
 // omitted rather than shipping a meaningless 0%.
 type Progress struct {
-	Root       string  `json:"root"`
 	Percent    float64 `json:"percent"`
 	BytesDone  int64   `json:"bytes_done"`
 	BytesTotal int64   `json:"bytes_total"`
 }
 
-// Root summarises one walked root.
+// Root summarises one configured root.
 type Root struct {
-	Name        string  `json:"name"`
-	Path        string  `json:"root"`
-	Size        int64   `json:"size"`
-	Unreadable  int     `json:"unreadable"`
-	WalkSeconds float64 `json:"walk_seconds"`
+	Name string `json:"name"`
+	Path string `json:"root"`
+	// Null until the root has been opened with every folder in it sized.
+	Size       *int64 `json:"size"`
+	Unreadable int    `json:"unreadable"`
 }
 
 // Snapshot is what /api/storage returns. Sep is the separator root names are
@@ -83,11 +76,13 @@ type Snapshot struct {
 type Entry struct {
 	Name string `json:"name"`
 	Size int64  `json:"size"`
+	// Waiting to be walked. Size is 0 until it has been.
+	Pending bool `json:"pending,omitempty"`
 }
 
-// Listing is one directory from the cached walk: every subdirectory, the
-// largest files, and totals for everything that was counted but not named, so
-// the parts always add up to Size.
+// Listing is one directory: every subfolder, the largest files, and totals
+// for the files that were counted but not named, so the parts always add up
+// to Size once nothing is pending.
 type Listing struct {
 	// Path is what was actually resolved, relative to the root, with "/"
 	// between names on every platform. When the requested path no longer
@@ -100,427 +95,467 @@ type Listing struct {
 	// All files directly inside, including the ones named in Files.
 	FileCount int   `json:"file_count"`
 	FileBytes int64 `json:"file_bytes"`
-	// Bytes in subdirectories below the scan depth, which have no entry of
-	// their own.
-	Deep int64 `json:"deep"`
+	// Subfolders that have no size yet.
+	Pending int `json:"pending"`
+	// Directories in here that could not be entered, so were not counted.
+	Unreadable int `json:"unreadable"`
+	// When the oldest subfolder size shown was measured; null when none is.
+	SizedAt *float64 `json:"sized_at"`
 }
 
 /* ── scanner ────────────────────────────────────────────────────────────── */
 
-// view is one root's place in a walked tree. A root that sits inside another
-// root on the same volume shares that root's tree, starting further down.
-type view struct {
-	t     *tree
-	start int32
+// job is one folder waiting to be walked.
+type job struct {
+	path  string // as read, links resolved
+	key   string // roots.Key(path), the cache key
+	label string // as the host knows it
 }
 
-// Scanner owns the cached walk. Reads are served under a read lock; only one
-// walk runs at a time.
+// Scanner answers listings from the disk and the cache, and walks folders
+// the cache is missing one at a time, in the background.
 type Scanner struct {
 	cfg   config.Config
 	roots *roots.Resolver
+	cache *cache
+	logf  func(string, ...any)
 
-	mu          sync.RWMutex
-	status      Status
-	published   []Root
-	views       []view // parallel to published; immutable once published
-	currentRoot string // label of the root the in-flight walk is on
-	scannedAt   time.Time
-	// What the volumes looked like when the published walk started, so the
-	// scheduler can tell whether another walk would show anything new.
-	baseline    map[string]uint64
-	baselineKey string
+	mu        sync.Mutex
+	queue     []job // most urgent first
+	current   *job
+	updatedAt *float64
+	err       *string
 
-	// progressDone and progressTotal change once per directory, far more often
-	// than anything else here, so they are plain atomics rather than going
-	// through mu, which every live frame reads.
+	// progressDone changes once per directory, far more often than anything
+	// else here, so it and its total are plain atomics rather than going
+	// through mu, which every live frame takes.
 	progressDone  atomic.Int64
 	progressTotal atomic.Int64
 
-	// scanMu serialises walks. A second request while one is in flight gets
-	// the current snapshot rather than queueing a duplicate walk.
-	scanMu   sync.Mutex
-	lastScan time.Time
+	// wake tells Loop there is work. Buffered by one so a signal is never
+	// lost and no sender ever blocks.
+	wake chan struct{}
 }
 
-func New(cfg config.Config, r *roots.Resolver) *Scanner {
-	return &Scanner{cfg: cfg, roots: r, published: []Root{}}
+// New loads the cache at cfg.StorageCache. A cache that cannot be written is
+// not fatal: sizes are then kept in memory, and walked again after a restart.
+func New(cfg config.Config, r *roots.Resolver, logf func(string, ...any)) *Scanner {
+	s := &Scanner{cfg: cfg, roots: r, logf: logf, wake: make(chan struct{}, 1)}
+	c, err := openCache(cfg.StorageCache)
+	if err != nil {
+		logf("storage cache %s: %v — folder sizes will not survive a restart", cfg.StorageCache, err)
+		c, _ = openCache("") // in memory, which cannot fail
+	}
+	s.cache = c
+	return s
 }
 
-// Status returns the scan state plus a live progress estimate while a walk is
-// running. It is cheap enough to call on every live tick.
+// Close saves what listings added to the cache since the last walk.
+func (s *Scanner) Close() error { return s.cache.close() }
+
+// Status returns the queue's state plus a live progress estimate for the
+// current walk. It is cheap enough to call on every live tick.
 func (s *Scanner) Status() Status {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := s.status
-	if out.Scanning {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := Status{Queued: len(s.queue), UpdatedAt: s.updatedAt, Error: s.err}
+	if s.current != nil {
+		out.Scanning, out.Current = true, s.current.label
 		if total := s.progressTotal.Load(); total > 0 {
 			done := s.progressDone.Load()
 			pct := round1(min(100, float64(done)/float64(total)*100))
-			out.Progress = &Progress{Root: s.currentRoot, Percent: pct, BytesDone: done, BytesTotal: total}
+			out.Progress = &Progress{Percent: pct, BytesDone: done, BytesTotal: total}
 		}
+	}
+	out.Scanning = out.Scanning || out.Queued > 0
+	return out
+}
+
+// rootDir is a configured root that is there right now.
+type rootDir struct {
+	label string
+	path  string // as configured
+	real  string // with links resolved, since the walk never follows them
+}
+
+func (s *Scanner) rootDirs() []rootDir {
+	var out []rootDir
+	for _, r := range s.roots.Roots() {
+		real := r.Path
+		if p, err := filepath.EvalSymlinks(r.Path); err == nil {
+			real = p
+		}
+		if _, err := rootDevice(real); err != nil {
+			continue // not mounted, or not a directory: leave it out
+		}
+		out = append(out, rootDir{label: r.Label, path: r.Path, real: real})
 	}
 	return out
 }
 
 func (s *Scanner) Snapshot() Snapshot {
-	status := s.Status()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return Snapshot{Status: status, Roots: s.published, Sep: roots.Sep}
-}
-
-// List resolves rel ("home/yuuki", or "" for the root itself) against root
-// number rootIdx of the last completed walk. It reports false only when there
-// is no such root; a path that has since disappeared resolves to its deepest
-// surviving ancestor instead.
-func (s *Scanner) List(rootIdx int, rel string) (Listing, bool) {
-	s.mu.RLock()
-	views := s.views
-	s.mu.RUnlock()
-	if rootIdx < 0 || rootIdx >= len(views) {
-		return Listing{}, false
-	}
-	t := views[rootIdx].t
-
-	var out Listing
-	n := t.nodes[views[rootIdx].start]
-	var resolved []string
-	for _, seg := range strings.Split(rel, "/") {
-		if seg == "" {
-			continue
+	out := Snapshot{Status: s.Status(), Roots: []Root{}, Sep: roots.Sep}
+	for _, r := range s.rootDirs() {
+		root := Root{Name: r.label, Path: r.path}
+		if c, ok := s.cache.get(roots.Key(r.real)); ok {
+			root.Size, root.Unreadable = &c.size, c.unreadable
 		}
-		var hit *dirNode
-		for _, c := range n.children {
-			if sameName(t.nodes[c].name, seg) {
-				hit = t.nodes[c]
-				break
-			}
-		}
-		if hit == nil {
-			out.Partial = true
-			break
-		}
-		n = hit
-		resolved = append(resolved, seg)
-	}
-
-	out.Path = strings.Join(resolved, "/")
-	out.Size = n.size
-	out.Dirs = make([]Entry, len(n.children))
-	for i, c := range n.children {
-		out.Dirs[i] = Entry{Name: t.nodes[c].name, Size: t.nodes[c].size}
-	}
-	out.Files = make([]Entry, len(n.top))
-	for i, f := range n.top {
-		out.Files[i] = Entry{Name: f.name, Size: f.size}
-	}
-	out.FileCount = int(n.files)
-	out.FileBytes = n.self
-	out.Deep = n.deep
-	return out, true
-}
-
-// previousTotal sums the byte sizes from the last completed scan, the
-// baseline a new walk's progress is measured against. Roots nested inside
-// another are already part of its total, so they are not added again.
-func (s *Scanner) previousTotal() int64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var total int64
-	for i, r := range s.published {
-		if s.views[i].start == 0 {
-			total += r.Size
-		}
-	}
-	return total
-}
-
-// beginScan applies the rate limit and flips Scanning on before returning, so
-// a caller that immediately reads Snapshot() sees the walk has started even
-// though the walk itself hasn't produced anything yet. It reports whether a
-// scan was actually started; when it was, the caller must arrange for
-// runScan to be called exactly once to release scanMu.
-func (s *Scanner) beginScan(force bool) bool {
-	if !s.scanMu.TryLock() {
-		return false
-	}
-	if !force && !s.lastScan.IsZero() && time.Since(s.lastScan) < s.cfg.StorageMinRescan {
-		s.scanMu.Unlock()
-		return false
-	}
-	s.progressTotal.Store(s.previousTotal())
-	s.progressDone.Store(0)
-	s.mu.Lock()
-	s.status.Scanning = true
-	s.mu.Unlock()
-	return true
-}
-
-func (s *Scanner) runScan(ctx context.Context) Snapshot {
-	defer s.scanMu.Unlock()
-	started := time.Now()
-
-	list := s.roots.Refresh()
-	baseline := usage(list)
-	published, views, err := s.walkAll(ctx, list)
-
-	s.mu.Lock()
-	s.status.Scanning = false
-	if err != nil {
-		msg := err.Error()
-		s.status.Error = &msg
-	} else {
-		elapsed := round2(time.Since(started).Seconds())
-		at := float64(started.UnixNano()) / 1e9
-		s.published, s.views, s.status.Error = published, views, nil
-		s.status.ScannedAt, s.status.Duration = &at, &elapsed
-		s.scannedAt, s.baseline, s.baselineKey = started, baseline, rootsKey(list)
-	}
-	s.mu.Unlock()
-
-	s.lastScan = time.Now()
-	// The walk's scratch space (the inode set, the BFS frontier) dwarfs what
-	// is kept, and the next walk is half an hour away at the earliest. Hand it
-	// back to the kernel now instead of letting it sit in the heap until then.
-	debug.FreeOSMemory()
-	return s.Snapshot()
-}
-
-// Scan rebuilds the tree, blocking until the walk finishes. Rate-limited
-// unless force is set.
-func (s *Scanner) Scan(ctx context.Context, force bool) Snapshot {
-	if !s.beginScan(force) {
-		return s.Snapshot()
-	}
-	return s.runScan(ctx)
-}
-
-// ScanAsync starts a rescan in the background and returns immediately with
-// Scanning already true, so a REST handler can hand the browser something to
-// watch instead of blocking the request for the length of the walk.
-func (s *Scanner) ScanAsync(ctx context.Context, force bool) Snapshot {
-	if !s.beginScan(force) {
-		return s.Snapshot()
-	}
-	go s.runScan(ctx)
-	return s.Snapshot()
-}
-
-func (s *Scanner) setCurrentRoot(label string) {
-	s.mu.Lock()
-	s.currentRoot = label
-	s.mu.Unlock()
-}
-
-/* ── scheduling ─────────────────────────────────────────────────────────── */
-
-// Loop keeps the map fresh — but only while somebody is looking at it.
-//
-// A full walk reads gigabytes of directory metadata, and with the cache
-// squeezed by a small memory limit it reads them from disk every time. Doing
-// that every half hour for nobody is the single most expensive thing Kanshi
-// could do, so after the opening walk the map is only refreshed while a
-// browser is connected (watching reports that), when a new one connects
-// (wake), and then only if the volumes have actually changed.
-func (s *Scanner) Loop(ctx context.Context, watching func() bool, wake <-chan struct{}) {
-	s.Scan(ctx, true)
-
-	interval := max(s.cfg.StorageInterval, time.Minute)
-	lastCheck := time.Now()
-	timer := time.NewTimer(interval)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-		case <-wake:
-		}
-		next := interval
-		if watching() {
-			if since := time.Since(lastCheck); since >= interval || s.rootsChanged() {
-				lastCheck = time.Now()
-				if s.stale() {
-					s.Scan(ctx, true)
-				}
-			} else {
-				next = interval - since
-			}
-		}
-		timer.Reset(next)
-	}
-}
-
-// rootsChanged reports a drive mounted or removed since the last walk. That
-// is worth a walk straight away, not at the next interval.
-func (s *Scanner) rootsChanged() bool {
-	key := rootsKey(s.roots.Refresh())
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.baseline != nil && key != s.baselineKey
-}
-
-// stale reports whether a walk now would show something the published one
-// does not.
-func (s *Scanner) stale() bool {
-	s.mu.RLock()
-	baseline, key, at := s.baseline, s.baselineKey, s.scannedAt
-	s.mu.RUnlock()
-	if baseline == nil || time.Since(at) >= maxAge {
-		return true
-	}
-	list := s.roots.Refresh()
-	if rootsKey(list) != key {
-		return true
-	}
-	for _, r := range list {
-		u, err := roots.DiskUsage(r.Path)
-		if err != nil {
-			continue
-		}
-		prev, ok := baseline[r.Path]
-		if !ok {
-			return true
-		}
-		threshold := max(uint64(changeFloor), uint64(float64(u.Total)*changeShare))
-		if absDiff(u.Used, prev) > threshold {
-			return true
-		}
-	}
-	return false
-}
-
-func usage(list []roots.Root) map[string]uint64 {
-	out := make(map[string]uint64, len(list))
-	for _, r := range list {
-		if u, err := roots.DiskUsage(r.Path); err == nil {
-			out[r.Path] = u.Used
-		}
+		out.Roots = append(out.Roots, root)
 	}
 	return out
 }
 
-func rootsKey(list []roots.Root) string {
-	parts := make([]string, len(list))
-	for i, r := range list {
-		parts[i] = r.Label + "=" + r.Path
-	}
-	return strings.Join(parts, "\x00")
+/* ── listing ────────────────────────────────────────────────────────────── */
+
+// opened is a directory that has just been read.
+type opened struct {
+	root     rootDir
+	dir      string
+	resolved []string
+	partial  bool
+	locked   bool // the root itself could not be read
+	dev      uint64
+	entries  []dirEntry // valid until rd reads again
+	subdirs  []string   // the entries a walk would enter
+	excluded map[string]bool
 }
 
-func absDiff(a, b uint64) uint64 {
-	if a > b {
-		return a - b
+// open resolves rel ("home/yuuki", or "" for the root itself) under root
+// number rootIdx by reading each directory on the way down, so a path can
+// only name what a walk would reach: no "..", no links, nothing excluded and
+// no other filesystem. A path that has since disappeared resolves to its
+// deepest surviving ancestor instead.
+func (s *Scanner) open(rd *dirReader, rootIdx int, rel string) (*opened, bool) {
+	list := s.rootDirs()
+	if rootIdx < 0 || rootIdx >= len(list) {
+		return nil, false
 	}
-	return b - a
+	o := &opened{root: list[rootIdx], dir: list[rootIdx].real, excluded: s.excludes()}
+	dev, err := rootDevice(o.dir)
+	if err != nil {
+		return nil, false
+	}
+	o.dev = dev
+	if o.entries, _, err = rd.read(cstring(o.dir), dedupeIn(o.dir)); err != nil {
+		o.locked = true
+		return o, true
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == "" {
+			continue
+		}
+		name, ok := o.find(seg)
+		if !ok {
+			o.partial = true
+			break
+		}
+		next := joinPath(o.dir, name)
+		entries, _, err := rd.read(cstring(next), dedupeIn(next))
+		if err != nil {
+			o.partial = true
+			break
+		}
+		o.dir, o.entries = next, entries
+		o.resolved = append(o.resolved, name)
+	}
+	for _, e := range o.entries {
+		if o.walkable(e) {
+			o.subdirs = append(o.subdirs, string(e.name))
+		}
+	}
+	return o, true
 }
 
-/* ── walking every root ─────────────────────────────────────────────────── */
+// walkable reports whether a walk of o.dir would enter e.
+func (o *opened) walkable(e dirEntry) bool {
+	if !e.dir || e.dev != o.dev {
+		return false
+	}
+	return len(o.excluded) == 0 || !o.excluded[roots.Key(joinPath(o.dir, string(e.name)))]
+}
 
-func (s *Scanner) walkAll(ctx context.Context, list []roots.Root) ([]Root, []view, error) {
-	// Linux applies setpriority(PRIO_PROCESS) and ioprio_set to the calling
-	// thread, and Windows' background mode is per thread too, so the goroutine
-	// is pinned first. It never unlocks: the runtime then retires the
-	// deprioritised thread when the walk returns, instead of handing it back
-	// to the scheduler for the poller to land on.
+func (o *opened) find(seg string) (string, bool) {
+	for _, e := range o.entries {
+		if sameName(string(e.name), seg) && o.walkable(e) {
+			return string(e.name), true
+		}
+	}
+	return "", false
+}
+
+// List reads one directory and sizes its subfolders from the cache, queueing
+// a walk for each one the cache is missing or has let go stale. It reports
+// false only when there is no such root.
+func (s *Scanner) List(rootIdx int, rel string) (Listing, bool) {
+	rd := newDirReader()
+	o, ok := s.open(rd, rootIdx, rel)
+	if !ok {
+		return Listing{}, false
+	}
+	out := Listing{Path: strings.Join(o.resolved, "/"), Partial: o.partial, Dirs: []Entry{}, Files: []Entry{}}
+	if o.locked {
+		out.Unreadable = 1
+		return out, true
+	}
+
+	var top fileHeap
+	var links map[uint64]struct{}
+	for _, e := range o.entries {
+		if e.dir {
+			continue
+		}
+		if e.key != 0 {
+			if links == nil {
+				links = map[uint64]struct{}{}
+			}
+			if _, dup := links[e.key]; dup {
+				continue
+			}
+			links[e.key] = struct{}{}
+		}
+		out.FileCount++
+		out.FileBytes += e.size
+		top.offer(e.size, e.name)
+	}
+	sort.Slice(top, func(a, b int) bool { return top[a].size > top[b].size })
+	for _, f := range top {
+		out.Files = append(out.Files, Entry{Name: f.name, Size: f.size})
+	}
+
+	dirKey := roots.Key(o.dir)
+	cached := s.cache.children(dirKey)
+	present := make(map[string]bool, len(o.subdirs))
+	var missing, stale []job
+	var oldest time.Time
+	now := time.Now()
+	for _, name := range o.subdirs {
+		nk := nameKey(name)
+		present[nk] = true
+		c, ok := cached[nk]
+		if !ok {
+			out.Dirs = append(out.Dirs, Entry{Name: name, Pending: true})
+			out.Pending++
+			missing = append(missing, s.job(o.dir, name))
+			continue
+		}
+		out.Dirs = append(out.Dirs, Entry{Name: name, Size: c.size})
+		out.Size += c.size
+		out.Unreadable += c.unreadable
+		if oldest.IsZero() || c.at.Before(oldest) {
+			oldest = c.at
+		}
+		if s.cfg.StorageInterval > 0 && now.Sub(c.at) > s.cfg.StorageInterval {
+			stale = append(stale, s.job(o.dir, name))
+		}
+	}
+	out.Size += out.FileBytes
+	sort.SliceStable(out.Dirs, func(a, b int) bool { return out.Dirs[a].Size > out.Dirs[b].Size })
+	if !oldest.IsZero() {
+		at := float64(oldest.Unix())
+		out.SizedAt = &at
+	}
+
+	s.cache.prune(dirKey, cached, present, s.rootKeys())
+	// Fully sized, this folder's total is now as fresh as its oldest part, and
+	// its parent's listing picks that up from the cache.
+	if out.Pending == 0 {
+		if oldest.IsZero() {
+			oldest = now
+		}
+		s.cache.put(dirKey, sized{size: out.Size, unreadable: out.Unreadable, at: oldest})
+	}
+	s.enqueue(missing, true)
+	s.enqueue(stale, false)
+	return out, true
+}
+
+// Rescan re-walks every subfolder of one directory that was not sized in the
+// last StorageMinRescan, ahead of anything already queued.
+func (s *Scanner) Rescan(rootIdx int, rel string) (Status, bool) {
+	o, ok := s.open(newDirReader(), rootIdx, rel)
+	if !ok {
+		return Status{}, false
+	}
+	cached := s.cache.children(roots.Key(o.dir))
+	var jobs []job
+	for _, name := range o.subdirs {
+		if c, ok := cached[nameKey(name)]; ok && time.Since(c.at) < s.cfg.StorageMinRescan {
+			continue
+		}
+		jobs = append(jobs, s.job(o.dir, name))
+	}
+	s.enqueue(jobs, true)
+	return s.Status(), true
+}
+
+func (s *Scanner) job(dir, name string) job {
+	p := joinPath(dir, name)
+	return job{path: p, key: roots.Key(p), label: s.roots.HostPath(p)}
+}
+
+/* ── the walk queue ─────────────────────────────────────────────────────── */
+
+// enqueue adds folders to walk. A folder inside one that is already queued or
+// being walked is left to that walk, and queued folders inside a new one are
+// dropped in its favour. Urgent jobs, the ones a listing is waiting on, go to
+// the front, and so does a queued folder that already covers one.
+func (s *Scanner) enqueue(jobs []job, urgent bool) {
+	if len(jobs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	var head []job
+	for _, j := range jobs {
+		if s.current != nil && roots.Within(s.current.key, j.key) {
+			continue
+		}
+		covered := -1
+		for i, q := range s.queue {
+			if roots.Within(q.key, j.key) {
+				covered = i
+				break
+			}
+		}
+		if covered >= 0 {
+			if urgent {
+				head = append(head, s.queue[covered])
+				s.queue = append(s.queue[:covered], s.queue[covered+1:]...)
+			}
+			continue
+		}
+		kept := s.queue[:0]
+		for _, q := range s.queue {
+			if !roots.Within(j.key, q.key) {
+				kept = append(kept, q)
+			}
+		}
+		s.queue = kept
+		if urgent {
+			head = append(head, j)
+		} else {
+			s.queue = append(s.queue, j)
+		}
+	}
+	s.queue = append(head, s.queue...)
+	s.mu.Unlock()
+	select {
+	case s.wake <- struct{}{}:
+	default: // already pending
+	}
+}
+
+// next takes the most urgent job off the queue, or reports that there is
+// none left.
+func (s *Scanner) next() (job, bool) {
+	s.mu.Lock()
+	if len(s.queue) == 0 {
+		s.current = nil
+		s.mu.Unlock()
+		return job{}, false
+	}
+	j := s.queue[0]
+	s.queue = s.queue[1:]
+	s.mu.Unlock()
+
+	var total int64
+	if c, ok := s.cache.get(j.key); ok {
+		total = c.size
+	}
+	s.progressTotal.Store(total)
+	s.progressDone.Store(0)
+	s.mu.Lock()
+	s.current = &j
+	s.mu.Unlock()
+	return j, true
+}
+
+// Loop walks queued folders as they arrive. Listings are what fill the
+// queue, so with nobody looking it sleeps.
+func (s *Scanner) Loop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.wake:
+		}
+		s.drain(ctx)
+	}
+}
+
+// drain walks until the queue is empty.
+//
+// Linux applies setpriority(PRIO_PROCESS) and ioprio_set to the calling
+// thread, and Windows' background mode is per thread too, so the goroutine is
+// pinned first. It never unlocks: the runtime then retires the deprioritised
+// thread when the queue runs dry, instead of handing it back to the scheduler
+// for the poller to land on.
+func (s *Scanner) drain(ctx context.Context) {
 	done := make(chan struct{})
-	var published []Root
-	var views []view
-	var err error
 	go func() {
 		defer close(done)
 		runtime.LockOSThread()
 		deprioritise()
-		published, views, err = s.walkRoots(ctx, list)
+		w := &walker{
+			maxDepth: s.cfg.TreeDepth,
+			excluded: s.excludes(),
+			progress: &s.progressDone,
+			pace:     newThrottle(s.cfg.StorageCPU),
+			rd:       newDirReader(),
+		}
+		for ctx.Err() == nil {
+			j, ok := s.next()
+			if !ok {
+				return
+			}
+			s.walkOne(ctx, w, j)
+		}
 	}()
-
 	select {
 	case <-done:
-		return published, views, err
 	case <-ctx.Done():
-		return nil, nil, ctx.Err()
 	}
+	// A walk's scratch space (the inode set, the BFS frontier) dwarfs what is
+	// kept. Hand it back to the kernel now instead of letting it sit in the
+	// heap until the next one.
+	debug.FreeOSMemory()
 }
 
-type walked struct {
-	view
-	unreadable int
-	seconds    float64
+func (s *Scanner) walkOne(ctx context.Context, w *walker, j job) {
+	started := time.Now()
+	t, err := w.walk(ctx, j.path)
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		// Gone, or not a directory any more. Recording it as an empty,
+		// unreadable folder keeps a listing that still shows it from asking
+		// for it again and again.
+		t = &tree{nodes: []*dirNode{{name: baseName(j.path), unreadable: 1}}}
+	}
+	err = s.cache.store(j.key, t, started, s.rootKeys())
+
+	at := float64(time.Now().UnixNano()) / 1e9
+	s.mu.Lock()
+	s.updatedAt = &at
+	if err != nil {
+		msg := "storage cache: " + err.Error()
+		s.err = &msg
+	} else {
+		s.err = nil
+	}
+	s.mu.Unlock()
 }
 
-// walkRoots walks each volume once. Roots are taken outermost first, and any
-// root inside the one being walked is picked up on the way past: C:\ and
-// C:\Users\you cost one pass, not two. A nested root the outer walk could not
-// reach — on another filesystem, excluded, or too deep — gets its own walk
-// when its turn comes.
-func (s *Scanner) walkRoots(ctx context.Context, list []roots.Root) ([]Root, []view, error) {
-	paths := make([]string, len(list))
-	for i, r := range list {
-		paths[i] = r.Path
-		if real, err := filepath.EvalSymlinks(r.Path); err == nil {
-			paths[i] = real // the walk never follows links, so start past them
-		}
-	}
-	order := make([]int, len(list))
-	for i := range order {
-		order[i] = i
-	}
-	sort.SliceStable(order, func(a, b int) bool { return len(paths[order[a]]) < len(paths[order[b]]) })
+/* ── helpers ────────────────────────────────────────────────────────────── */
 
-	w := &walker{
-		maxDepth: s.cfg.TreeDepth,
-		excluded: s.excludes(),
-		progress: &s.progressDone,
-		pace:     newThrottle(s.cfg.StorageCPU),
-		rd:       newDirReader(),
+// rootKeys is every root's cache key, which a walk or prune elsewhere must
+// not delete.
+func (s *Scanner) rootKeys() []string {
+	var out []string
+	for _, r := range s.rootDirs() {
+		out = append(out, roots.Key(r.real))
 	}
-	results := make([]*walked, len(list))
-	for _, i := range order {
-		if results[i] != nil {
-			continue
-		}
-		if _, err := rootDevice(paths[i]); err != nil {
-			continue // not mounted, or not a directory: leave it out
-		}
-		var nested []*nestedRoot
-		for _, j := range order {
-			if j != i && results[j] == nil && roots.Key(paths[j]) != roots.Key(paths[i]) && roots.Within(paths[i], paths[j]) {
-				nested = append(nested, &nestedRoot{idx: j, path: paths[j], node: -1})
-			}
-		}
-
-		s.setCurrentRoot(list[i].Label)
-		started := time.Now()
-		t, err := w.walk(ctx, paths[i], nested)
-		if err != nil {
-			return nil, nil, fmt.Errorf("%T: %w", err, err)
-		}
-		secs := round2(time.Since(started).Seconds())
-		results[i] = &walked{view{t, 0}, t.unreadable, secs}
-		for _, n := range nested {
-			if n.node >= 0 {
-				results[n.idx] = &walked{view{t, n.node}, n.unreadable, secs}
-			}
-		}
-	}
-
-	published := []Root{}
-	var views []view
-	for i, r := range results {
-		if r == nil {
-			continue
-		}
-		published = append(published, Root{
-			Name:        list[i].Label,
-			Path:        list[i].Path,
-			Size:        r.t.nodes[r.start].size,
-			Unreadable:  r.unreadable,
-			WalkSeconds: r.seconds,
-		})
-		views = append(views, r.view)
-	}
-	return published, views, nil
+	return out
 }
 
 // excludes normalises KANSHI_STORAGE_EXCLUDE. Entries may be written as host
@@ -535,10 +570,29 @@ func (s *Scanner) excludes() map[string]bool {
 	return out
 }
 
-func round1(v float64) float64 {
-	return float64(int64(v*10+0.5)) / 10
+// dedupeIn reports whether files in dir should be counted once per file ID,
+// by the same rule as a walk: Windows only does it inside its system
+// directory, and Linux always does, by link count.
+func dedupeIn(dir string) bool {
+	sys := systemRoot()
+	return sys != "" && roots.Within(sys, dir)
 }
 
-func round2(v float64) float64 {
-	return float64(int64(v*100+0.5)) / 100
+// joinPath adds one name to a directory path read from disk.
+func joinPath(dir, name string) string {
+	if dir[len(dir)-1] == pathSep {
+		return dir + name
+	}
+	return dir + string(pathSep) + name
+}
+
+// cstring is path with a NUL after it in the backing array, as the directory
+// readers require.
+func cstring(path string) []byte {
+	b := append([]byte(path), 0)
+	return b[:len(path)]
+}
+
+func round1(v float64) float64 {
+	return float64(int64(v*10+0.5)) / 10
 }
