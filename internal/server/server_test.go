@@ -100,7 +100,7 @@ func TestRescanNeedsTheDashboard(t *testing.T) {
 		t.Errorf("cross-origin POST = %d", w.Code)
 	}
 	own := func(r *http.Request) { r.Header.Set("X-Kanshi", "1"); r.Header.Set("Origin", "http://localhost:8100") }
-	if w := do(s, "POST", "/api/storage/rescan", own); w.Code != http.StatusOK {
+	if w := do(s, "POST", "/api/storage/rescan?root=0&path=", own); w.Code != http.StatusOK {
 		t.Errorf("POST from the dashboard = %d", w.Code)
 	}
 }

@@ -26,8 +26,8 @@ import (
 
 // Frame is one push to the browser. Vitals and Docker are explicit nulls
 // rather than omitted, because app.js tests each for truthiness. Storage is
-// only the scan status: the page refetches the storage map itself when the
-// scan timestamp moves, so nothing polls for it.
+// only the walk queue's status: the page refetches the folder it shows when
+// a walk finishes, so nothing polls for it.
 type Frame struct {
 	Vitals  *vitals.Sample      `json:"vitals"`
 	Docker  *dockerstats.Result `json:"docker"`
@@ -46,10 +46,9 @@ type Server struct {
 	storage *storage.Scanner
 	assets  *assets
 
-	// base outlives any single request. Work that mutates shared state — a
-	// sample, a storage walk — is started under it rather than the request
-	// context, so a browser navigating away mid-walk cannot abort a 76-second
-	// scan and leave an error on the snapshot everyone else reads.
+	// base outlives any single request. Work that mutates shared state, such
+	// as a sample, is started under it rather than the request context, so a
+	// browser navigating away cannot abort it for everyone else.
 	base context.Context
 
 	mu      sync.RWMutex
@@ -58,11 +57,9 @@ type Server struct {
 	subs    map[chan []byte]struct{}
 	lastSee time.Time
 
-	// wake releases the poller from its idle sleep, and storageWake tells the
-	// storage scheduler a new viewer arrived. Both are buffered by one so a
+	// wake releases the poller from its idle sleep. Buffered by one so a
 	// signal is never lost and no sender ever blocks.
-	wake        chan struct{}
-	storageWake chan struct{}
+	wake chan struct{}
 
 	// access is set once Run starts listening. accessSource is where the
 	// current mode came from, which decides whether the page may change it.
@@ -90,11 +87,10 @@ func New(cfg config.Config, web fs.FS, version string, logf func(string, ...any)
 		roots:        r,
 		vitals:       vitals.New(r),
 		docker:       dockerstats.New(cfg),
-		storage:      storage.New(cfg, r),
+		storage:      storage.New(cfg, r, logf),
 		assets:       a,
 		subs:         make(map[chan []byte]struct{}),
 		wake:         make(chan struct{}, 1),
-		storageWake:  make(chan struct{}, 1),
 		accessSource: cfg.AccessSource,
 	}, nil
 }
@@ -196,9 +192,6 @@ func (s *Server) idle() bool {
 	defer s.mu.RUnlock()
 	return len(s.subs) == 0 && time.Since(s.lastSee) > s.cfg.IdleTimeout
 }
-
-// watching is the storage scheduler's view of the same thing.
-func (s *Server) watching() bool { return !s.idle() }
 
 // touch records browser activity and wakes an idle poller.
 func (s *Server) touch() {
@@ -313,19 +306,12 @@ func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStorage(w http.ResponseWriter, r *http.Request) {
-	snap := s.storage.Snapshot()
-	// The very first request can arrive before the background loop has
-	// finished its opening walk. Kick one off and return immediately rather
-	// than blocking the request for the walk's full length — the live stream
-	// carries the percentage from here on.
-	if snap.ScannedAt == nil && !snap.Scanning {
-		snap = s.storage.ScanAsync(s.base, true)
-	}
-	writeJSON(w, r, snap)
+	writeJSON(w, r, s.storage.Snapshot())
 }
 
-// handleStorageDir serves one directory of the cached walk:
-// /api/storage/dir?root=0&path=home/yuuki. It never touches the disk.
+// handleStorageDir reads one directory and sizes its subfolders from the
+// cache: /api/storage/dir?root=0&path=home/yuuki. Subfolders the cache is
+// missing come back pending, and are walked in the background.
 func (s *Server) handleStorageDir(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	root, err := strconv.Atoi(q.Get("root"))
@@ -341,7 +327,8 @@ func (s *Server) handleStorageDir(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, listing)
 }
 
-// handleRescan starts a walk. It has to come from the dashboard itself: the
+// handleRescan re-walks the subfolders of one directory, named the same way
+// as for handleStorageDir. It has to come from the dashboard itself: the
 // custom header cannot be set by a plain form or an <img> on some other site,
 // so a page you happen to visit cannot keep your disks busy.
 func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
@@ -349,7 +336,18 @@ func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	writeJSON(w, r, s.storage.ScanAsync(s.base, false))
+	q := r.URL.Query()
+	root, err := strconv.Atoi(q.Get("root"))
+	if err != nil {
+		http.Error(w, "bad root", http.StatusBadRequest)
+		return
+	}
+	status, ok := s.storage.Rescan(root, q.Get("path"))
+	if !ok {
+		http.Error(w, "no such root", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, r, status)
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -378,7 +376,6 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	s.subs[ch] = struct{}{}
 	s.mu.Unlock()
 	s.touch()
-	signal(s.storageWake)
 	defer func() {
 		s.mu.Lock()
 		delete(s.subs, ch)
@@ -477,7 +474,7 @@ func (s *Server) Run(ctx context.Context, mode access.Mode) error {
 	var wg sync.WaitGroup
 	wg.Add(3)
 	go func() { defer wg.Done(); s.Poll(ctx) }()
-	go func() { defer wg.Done(); s.storage.Loop(ctx, s.watching, s.storageWake) }()
+	go func() { defer wg.Done(); s.storage.Loop(ctx) }()
 	go func() { defer wg.Done(); mgr.Watch(ctx) }()
 
 	<-ctx.Done()
@@ -488,6 +485,7 @@ func (s *Server) Run(ctx context.Context, mode access.Mode) error {
 	mgr.Close()
 	s.docker.Close()
 	wg.Wait()
+	s.storage.Close()
 	return nil
 }
 

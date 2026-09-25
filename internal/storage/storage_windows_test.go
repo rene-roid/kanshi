@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"context"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -13,20 +12,20 @@ func TestJunctionsAreNotFollowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mklink: %v: %s", err, out)
 	}
-	old := systemRoot
-	systemRoot = func() string { return root }
-	defer func() { systemRoot = old }()
-
-	snap := scanner(root, root).Scan(context.Background(), true)
-	if want := int64(sizeBig + sizeA + sizeDeep + sizeNested); snap.Roots[0].Size != want {
-		t.Errorf("size = %d, want %d: the junction was followed", snap.Roots[0].Size, want)
+	s := scanner(t, root, root)
+	top := list(t, s, 0, "")
+	if _, ok := dirSizes(top)["loop"]; ok {
+		t.Error("the junction was listed as a folder")
+	}
+	if l, _ := s.List(0, "loop"); !l.Partial {
+		t.Errorf("the junction was followed: %+v", l)
 	}
 }
 
 func TestHardLinksOutsideTheSystemDirectoryCountTwice(t *testing.T) {
 	root := fixture(t)
-	snap := scanner(root, root).Scan(context.Background(), true)
-	if want := int64(2*sizeBig + sizeA + sizeDeep + sizeNested); snap.Roots[0].Size != want {
-		t.Errorf("size = %d, want %d", snap.Roots[0].Size, want)
+	top := list(t, scanner(t, root, root), 0, "")
+	if top.FileBytes != 2*sizeBig || top.FileCount != 2 {
+		t.Errorf("files: %d bytes in %d files", top.FileBytes, top.FileCount)
 	}
 }

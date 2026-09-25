@@ -134,9 +134,10 @@ Precedence is: flag, then environment, then file, then the default.
 | | `--open` | on when double-clicked on Windows | Open the dashboard in the browser at startup |
 | `KANSHI_STORAGE_ROOTS` | | `auto` | Folders in the storage map: `auto`, `path`, or `label=path`, comma-separated. `auto,/srv` adds to the defaults |
 | `KANSHI_STORAGE_EXCLUDE` | | *(none)* | Folders to skip entirely, e.g. `/var/lib/docker` |
-| `KANSHI_STORAGE_INTERVAL` | | `1800` | Seconds between rescans while someone is watching |
-| `KANSHI_STORAGE_CPU` | | `25` | Share of one core, in %, a scan may use. `100` = unthrottled |
-| `KANSHI_TREE_DEPTH` | | `4` | Folder depth you can drill into; deeper bytes are still counted |
+| `KANSHI_STORAGE_INTERVAL` | | `21600` | Seconds a folder's size is trusted before opening the folder above it measures it again |
+| `KANSHI_STORAGE_CPU` | | `25` | Share of one core, in %, measuring folders may use. `100` = unthrottled |
+| `KANSHI_TREE_DEPTH` | | `4` | Folder levels remembered from each measurement; deeper folders are measured when you open them |
+| `KANSHI_STORAGE_CACHE` | | `~/.cache/kanshi/storage.cache`, `%LocalAppData%\kanshi\storage.cache`; `/data/storage.cache` in the image | Where folder sizes are cached, so a restart does not measure them again |
 | `KANSHI_POLL_INTERVAL` | | `5` | Seconds between live updates |
 | `KANSHI_IDLE_TIMEOUT` | | `30` | Seconds with no browser before everything stops |
 | `KANSHI_DOCKER_CONCURRENCY` | | `8` | Parallel container stat requests |
@@ -151,12 +152,15 @@ Precedence is: flag, then environment, then file, then the default.
 With `KANSHI_STORAGE_ROOTS=auto`:
 
 - **Linux:** `/`, plus every real filesystem mounted at or under `/mnt` (`/mnt/data`, `/mnt/usb`, a NAS share…).
-  Drives mounted later appear at the next scan.
+  Drives mounted later appear on their own.
 - **Windows:** the system drive (`C:\`), your user folder, and every other fixed drive (`D:\`, `E:\`…).
   Your user folder is inside `C:\`, and both come out of a single pass over the drive.
 
-Scans run at the lowest CPU and disk priority and are throttled to a quarter of one core. After the first
-scan they only run while someone has the dashboard open, and only if the drives have actually changed.
+Nothing is scanned up front. Opening a folder lists it on the spot, and each subfolder's size comes from a small
+cache file; the ones it has never seen, or not for six hours, are measured in the background, at the lowest CPU
+and disk priority and throttled to a quarter of one core. The first visit to `/` still measures most of the disk
+once. After that, opening a folder is instant, restarts included, and only folders someone opens are measured
+again. **Rescan** re-measures the folders on screen.
 
 ## Updating
 
@@ -194,12 +198,12 @@ update is ~16 KB of JSON but about 2 KB on the wire.
 
 | Endpoint | What it returns |
 |---|---|
-| `GET /api/stream` | Live updates: vitals, containers and the storage scan's progress |
+| `GET /api/stream` | Live updates: vitals, containers and which folder is being measured |
 | `GET /api/vitals` | CPU, memory, swap, network, disk and volume figures |
 | `GET /api/containers` | Per-container stats |
 | `GET /api/storage` | One summary line per storage root |
-| `GET /api/storage/dir?root=0&path=home/you` | One folder from the last scan (never touches the disk) |
-| `POST /api/storage/rescan` | Starts a scan; needs the `X-Kanshi: 1` header |
+| `GET /api/storage/dir?root=0&path=home/you` | One folder, listed live; subfolders not measured yet come back `pending` and are queued |
+| `POST /api/storage/rescan?root=0&path=home/you` | Re-measures that folder's subfolders; needs the `X-Kanshi: 1` header |
 | `GET /api/access`, `POST /api/access` | The access mode; changing it only works from this computer |
 | `GET /api/config` | Version, OS and intervals |
 | `GET /healthz` | `{"ok":true}` |

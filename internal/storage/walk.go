@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"os"
-	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -11,28 +10,25 @@ import (
 	"github.com/rene-roid/kanshi/internal/roots"
 )
 
-// Largest individual files remembered per directory. Everything past this is
-// still counted, just not named.
+// Largest individual files named in a listing. Everything past this is still
+// counted, just not named.
 const topFiles = 32
 
-// dirNode is one directory within TreeDepth of its root. Deeper directories
-// have their bytes rolled into the nearest retained ancestor rather than
-// getting a node of their own.
+// dirNode is one directory within TreeDepth of where the walk started. Deeper
+// directories have their bytes rolled into the nearest retained ancestor
+// rather than getting a node of their own.
 type dirNode struct {
-	name     string
-	self     int64 // bytes of files directly inside this dir
-	deep     int64 // bytes below the retained depth
-	size     int64 // self + deep + children
-	files    int32 // number of files directly inside this dir
-	children []int32
-	top      fileHeap // largest files, capped at topFiles
+	name       string
+	bytes      int64 // files directly inside, plus everything below the retained depth
+	size       int64 // bytes + children
+	unreadable int32 // directories at or below this one the walk could not enter
+	children   []int32
 }
 
-// tree is one volume's walk. nodes is in breadth-first order, so every parent
-// comes before all of its children and nodes[0] is the root.
+// tree is one walk. nodes is in breadth-first order, so every parent comes
+// before all of its children and nodes[0] is where the walk started.
 type tree struct {
-	nodes      []*dirNode
-	unreadable int
+	nodes []*dirNode
 }
 
 // dirEntry is one directory entry as the platform's reader reports it. name
@@ -45,18 +41,7 @@ type dirEntry struct {
 	key  uint64 // files that may have other hard links: counted once per key
 }
 
-// nestedRoot is a configured root that lies inside the one being walked.
-type nestedRoot struct {
-	idx        int
-	path       string
-	node       int32 // its node once the walk reaches it, else -1
-	parent     int   // the nested root enclosing it, or -1 for the outer root
-	unreadable int
-}
-
-const markSystem = -1
-
-// walker carries what stays the same across every root of one scan.
+// walker carries what stays the same across every walk of one batch.
 type walker struct {
 	maxDepth int
 	excluded map[string]bool
@@ -81,8 +66,7 @@ type frontier struct {
 type queued struct {
 	start, end uint32 // its path is paths[start:end], with a NUL at end
 	node       int32
-	rel        uint16 // depth below the nearest root
-	owner      int16  // index into the nested roots, or -1 for the outer root
+	depth      uint16 // below where the walk started
 	own        bool
 	dedupe     bool // Windows: inside the system directory, where hard links live
 }
@@ -113,54 +97,37 @@ func (f *frontier) reset() {
 	f.dirs = f.dirs[:0]
 }
 
-// walk is a level-by-level BFS. Only directories within maxDepth of their
-// root get a node of their own; anything deeper is still fully traversed and
-// counted, but its bytes roll up into the nearest retained ancestor. (On the
-// host this was written for, that is ~2.3k retained nodes instead of ~96k.)
-//
-// A nested root restarts the depth count, so it gets full-depth detail of its
-// own while its bytes still count toward the outer root.
+// walk sizes one folder with a level-by-level BFS. Only directories within
+// maxDepth of the start get a node of their own; anything deeper is still
+// fully traversed and counted, but its bytes roll up into the nearest retained
+// ancestor. (Walking all of / on the host this was written for retains ~2.3k
+// nodes instead of ~96k.)
 //
 // Going breadth-first means the frontier is never more than two levels of
 // paths, and the retained levels are all finished before the deep, bulky part
 // of the tree starts. Directories are opened by full path, so no descriptor is
 // held open while its children wait in the queue.
-func (w *walker) walk(ctx context.Context, rootPath string, nested []*nestedRoot) (*tree, error) {
+func (w *walker) walk(ctx context.Context, rootPath string) (*tree, error) {
 	rootDev, err := rootDevice(rootPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Directories that need special handling, keyed by the BFS level at which
-	// they can turn up, so the path is only normalised on those levels.
-	marks := map[int]map[string]int{}
-	mark := func(path string, m int) {
-		rel := strings.Trim(roots.Key(path)[len(roots.Key(rootPath)):], string(pathSep))
-		level := strings.Count(rel, string(pathSep)) + 1
-		if marks[level] == nil {
-			marks[level] = map[string]int{}
-		}
-		marks[level][roots.Key(path)] = m
-	}
-	for i, n := range nested {
-		mark(n.path, i)
-		n.parent = -1
-		for j, o := range nested {
-			if j != i && roots.Within(o.path, n.path) && (n.parent < 0 || len(o.path) > len(nested[n.parent].path)) {
-				n.parent = j
-			}
-		}
-	}
-	rootDedupe := false
-	if sys := systemRoot(); sys != "" && roots.Within(rootPath, sys) {
-		if roots.Key(sys) == roots.Key(rootPath) {
+	// Windows de-duplicates hard links only inside its system directory. The
+	// walk is either inside it already, or may pass it at a known depth.
+	rootDedupe, sysLevel, sysKey := false, -1, ""
+	if sys := systemRoot(); sys != "" {
+		switch {
+		case roots.Within(sys, rootPath):
 			rootDedupe = true
-		} else {
-			mark(sys, markSystem)
+		case roots.Within(rootPath, sys):
+			sysKey = roots.Key(sys)
+			rel := strings.Trim(sysKey[len(roots.Key(rootPath)):], string(pathSep))
+			sysLevel = strings.Count(rel, string(pathSep)) + 1
 		}
 	}
 
-	t := &tree{nodes: make([]*dirNode, 1, 4096)}
+	t := &tree{nodes: make([]*dirNode, 1, 256)}
 	t.nodes[0] = &dirNode{name: baseName(rootPath)}
 	// Packed into one int rather than a (dev, ino) pair: overlay2 hardlinks
 	// everything, so this set reaches six figures and a struct key costs
@@ -169,11 +136,11 @@ func (w *walker) walk(ctx context.Context, rootPath string, nested []*nestedRoot
 
 	level, next := &frontier{}, &frontier{}
 	level.paths = append([]byte(rootPath), 0)
-	level.dirs = []queued{{end: uint32(len(rootPath)), node: 0, own: true, owner: -1, dedupe: rootDedupe}}
+	level.dirs = []queued{{end: uint32(len(rootPath)), node: 0, own: true, dedupe: rootDedupe}}
 
 	for depth := 0; len(level.dirs) > 0; depth++ {
-		levelMarks := marks[depth+1]
-		checkPath := len(w.excluded) > 0 || levelMarks != nil
+		atSys := depth+1 == sysLevel
+		checkPath := len(w.excluded) > 0 || atSys
 		for _, q := range level.dirs {
 			dirPath := level.path(q)
 			entries, seen, err := w.rd.read(dirPath, q.dedupe)
@@ -181,10 +148,7 @@ func (w *walker) walk(ctx context.Context, rootPath string, nested []*nestedRoot
 				// A directory we cannot read would otherwise silently vanish
 				// from the totals — count it so the UI can say the tree is
 				// incomplete rather than quietly under-reporting.
-				t.unreadable++
-				for o := int(q.owner); o >= 0; o = nested[o].parent {
-					nested[o].unreadable++
-				}
+				t.nodes[q.node].unreadable++
 				continue
 			}
 			node := t.nodes[q.node]
@@ -200,57 +164,37 @@ func (w *walker) walk(ctx context.Context, rootPath string, nested []*nestedRoot
 						seenInodes[e.key] = struct{}{}
 					}
 					bytesDone += e.size
-					if q.own {
-						node.self += e.size
-						node.files++
-						node.top.offer(e.size, e.name)
-					} else {
-						node.deep += e.size
-					}
+					node.bytes += e.size
 					continue
 				}
 
-				// Don't cross into other filesystems — each root is walked
+				// Don't cross into other filesystems — each root is sized
 				// separately, so we'd otherwise double-count.
 				if e.dev != rootDev {
 					continue
 				}
-				rel := q.rel + 1
+				d := q.depth + 1
 				child := next.push(dirPath, e.name, queued{
-					node: q.node, rel: rel, owner: q.owner, dedupe: q.dedupe,
-					own: q.own && int(rel) <= w.maxDepth,
+					node: q.node, depth: d, dedupe: q.dedupe,
+					own: q.own && int(d) <= w.maxDepth,
 				})
-				nestedAt := -1
 				if checkPath {
 					key := normKey(next.path(child))
 					if w.excluded[key] {
 						next.pop(child)
 						continue
 					}
-					if m, ok := levelMarks[key]; ok {
-						if m == markSystem {
-							child.dedupe = true
-						} else if q.own {
-							// Only when its parent has a node: otherwise it
-							// has nowhere to hang, and gets its own walk.
-							child.own, child.rel, child.owner = true, 0, int16(m)
-							nestedAt = m
-						}
+					if atSys && key == sysKey {
+						child.dedupe = true
 					}
 				}
 				if child.own {
 					child.node = int32(len(t.nodes))
 					t.nodes = append(t.nodes, &dirNode{name: string(e.name)})
 					node.children = append(node.children, child.node)
-					if nestedAt >= 0 {
-						nested[nestedAt].node = child.node
-					}
 				}
 				next.dirs[len(next.dirs)-1] = child
 			}
-			// Every byte is counted here exactly once regardless of depth, the
-			// same set the previous scan's totals cover — so this sum lines up
-			// with progressTotal.
 			w.progress.Add(bytesDone)
 
 			if err := w.pace.wait(ctx, seen); err != nil {
@@ -265,18 +209,11 @@ func (w *walker) walk(ctx context.Context, rootPath string, nested []*nestedRoot
 	// backwards totals each child before the parent that sums it.
 	for i := len(t.nodes) - 1; i >= 0; i-- {
 		node := t.nodes[i]
-		node.size += node.self + node.deep
+		node.size += node.bytes
 		for _, c := range node.children {
 			node.size += t.nodes[c].size
+			node.unreadable += t.nodes[c].unreadable
 		}
-	}
-	// Listings are served largest-first, so sort once here rather than on
-	// every request.
-	for _, node := range t.nodes {
-		sort.Slice(node.children, func(a, b int) bool {
-			return t.nodes[node.children[a]].size > t.nodes[node.children[b]].size
-		})
-		sort.Slice(node.top, func(a, b int) bool { return node.top[a].size > node.top[b].size })
 	}
 	return t, nil
 }

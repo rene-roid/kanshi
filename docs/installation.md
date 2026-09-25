@@ -178,6 +178,7 @@ then `docker compose up -d` again to apply them.
 | `network_mode: host` | Real host network throughput, and the ability to listen on the host's LAN and Tailscale addresses |
 | `/var/run/docker.sock` (read-only) | Container stats |
 | `/` → `/hostfs` (read-only, `rslave`) | The storage map. `rslave` makes drives mounted later appear without a restart |
+| `kanshi-data` → `/data` | The folder size cache, so an update or restart does not measure the disk again |
 | `cap_add: DAC_READ_SEARCH` | Read any directory, so the map is complete. Does not allow writing |
 | `read_only`, `cap_drop: ALL`, `no-new-privileges` | Nothing else |
 | `cpus: 1.0`, `mem_limit: 96m` | A ceiling; normal use is a fraction of this |
@@ -272,8 +273,9 @@ file already has the capability.
 **The containers card says Docker was not found.** Docker is not running, or its socket is elsewhere. Set
 `DOCKER_HOST` to the right endpoint, e.g. `unix:///run/user/1000/docker.sock` for rootless Docker.
 
-**The first storage scan takes a while.** It walks every folder once, at low priority and throttled to a
-quarter of one core. `KANSHI_STORAGE_EXCLUDE=/var/lib/docker` skips the largest pile of small files on a Docker
-host; `KANSHI_STORAGE_CPU=100` removes the throttle.
+**Folders say "sizing…" for a while the first time.** Each one is measured once, at low priority and
+throttled to a quarter of one core, and then cached; the first visit to `/` measures most of the disk.
+`KANSHI_STORAGE_EXCLUDE=/var/lib/docker` skips the largest pile of small files on a Docker host;
+`KANSHI_STORAGE_CPU=100` removes the throttle.
 
 **Container (Compose) not starting.** `docker ps --filter name=kanshi` and `docker logs --tail=100 kanshi`.

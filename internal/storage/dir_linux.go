@@ -14,6 +14,9 @@ func normKey(p []byte) string { return string(p) }
 
 func sameName(a, b string) bool { return a == b }
 
+// nameKey is how one name appears in a cache key.
+func nameKey(name string) string { return name }
+
 // systemRoot is where Windows keeps its hard links. Linux has no such place:
 // every multiply-linked file is spotted by its link count instead.
 var systemRoot = func() string { return "" }

@@ -17,8 +17,11 @@ const pathSep = '\\'
 // normKey matches roots.Key: NTFS names compare case-insensitively.
 func normKey(p []byte) string { return strings.ToLower(string(p)) }
 
-// sameName lets a pasted c:\users\... find C:\Users\... in the tree.
+// sameName lets a pasted c:\users\... find C:\Users\... on disk.
 func sameName(a, b string) bool { return strings.EqualFold(a, b) }
+
+// nameKey is how one name appears in a cache key, lower-cased like roots.Key.
+func nameKey(name string) string { return strings.ToLower(name) }
 
 // systemRoot is C:\Windows. Its component store hard-links most of System32,
 // so files there are de-duplicated by file ID; anywhere else hard links are

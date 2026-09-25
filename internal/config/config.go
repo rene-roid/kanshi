@@ -12,6 +12,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -43,20 +44,26 @@ type Config struct {
 	// A DOCKER_HOST-style address: unix://, npipe:// or tcp://.
 	DockerHost string
 
-	// Storage walk. Entries are "auto", "label=path" or just "path".
-	StorageRoots    []string
+	// Storage map. Entries are "auto", "label=path" or just "path".
+	StorageRoots []string
+	// A cached folder size older than this is walked again the next time
+	// its parent is opened.
 	StorageInterval time.Duration
 	// Paths to skip entirely. Their bytes vanish from the totals, so only
 	// exclude things you truly don't want counted.
-	StorageExclude   []string
+	StorageExclude []string
+	// Rescan skips folders sized more recently than this.
 	StorageMinRescan time.Duration
 	// Share of one core, in percent, the walk may average. It sleeps between
 	// directories to stay under it. 0 or 100+ means unthrottled.
 	StorageCPU float64
 
-	// Directories deeper than this have no listing of their own; their bytes
-	// roll up into the nearest ancestor that does.
+	// How many levels below a walked folder are cached from the same walk.
+	// Anything deeper is walked when it is opened.
 	TreeDepth int
+	// The file folder sizes are cached in. Empty keeps them in memory only,
+	// to be walked again after a restart.
+	StorageCache string
 
 	// Where the host's root filesystem is mounted when Kanshi runs in a
 	// container. Empty on a bare-metal install.
@@ -109,11 +116,12 @@ func Load(flags Flags) Config {
 		DockerConcurrency: l.int("KANSHI_DOCKER_CONCURRENCY", 8),
 		DockerHost:        l.dockerHost(),
 		StorageRoots:      l.list("KANSHI_STORAGE_ROOTS", "auto"),
-		StorageInterval:   l.seconds("KANSHI_STORAGE_INTERVAL", 1800*time.Second),
+		StorageInterval:   l.seconds("KANSHI_STORAGE_INTERVAL", 6*time.Hour),
 		StorageExclude:    l.list("KANSHI_STORAGE_EXCLUDE", ""),
 		StorageMinRescan:  l.seconds("KANSHI_STORAGE_MIN_RESCAN", 30*time.Second),
 		StorageCPU:        l.float("KANSHI_STORAGE_CPU", 25),
 		TreeDepth:         l.int("KANSHI_TREE_DEPTH", 4),
+		StorageCache:      l.string("KANSHI_STORAGE_CACHE", defaultStorageCache()),
 		HostRoot:          strings.TrimRight(l.string("KANSHI_HOST_ROOT", ""), `/\`),
 		Access:            access,
 		AccessSource:      accessSrc,
@@ -122,6 +130,17 @@ func Load(flags Flags) Config {
 		FileLoaded:        loaded,
 		WebDir:            l.string("KANSHI_WEB_DIR", ""),
 	}
+}
+
+// defaultStorageCache is in the user's cache folder: ~/.cache/kanshi on Linux,
+// %LocalAppData%\kanshi on Windows. A scratch container has no home, so there
+// it is set explicitly.
+func defaultStorageCache() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "kanshi", "storage.cache")
 }
 
 // lookup resolves one setting against the environment, then the file.

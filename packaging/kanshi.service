@@ -18,6 +18,9 @@ After=network-online.target docker.service tailscaled.service
 ExecStart=/usr/local/bin/kanshi
 StateDirectory=kanshi
 Environment=KANSHI_CONFIG=%S/kanshi/kanshi.env
+# The folder size cache, so a restart does not walk the disk again.
+CacheDirectory=kanshi
+Environment=KANSHI_STORAGE_CACHE=%C/kanshi/storage.cache
 Restart=on-failure
 RestartSec=5
 
