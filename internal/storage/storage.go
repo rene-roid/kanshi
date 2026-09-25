@@ -236,7 +236,7 @@ func (s *Scanner) open(rd *dirReader, rootIdx int, rel string) (*opened, bool) {
 		return nil, false
 	}
 	o.dev = dev
-	if o.entries, _, err = rd.read(cstring(o.dir), false); err != nil {
+	if o.entries, _, err = rd.read(cstring(o.dir), dedupeIn(o.dir)); err != nil {
 		o.locked = true
 		return o, true
 	}
@@ -250,7 +250,7 @@ func (s *Scanner) open(rd *dirReader, rootIdx int, rel string) (*opened, bool) {
 			break
 		}
 		next := joinPath(o.dir, name)
-		entries, _, err := rd.read(cstring(next), false)
+		entries, _, err := rd.read(cstring(next), dedupeIn(next))
 		if err != nil {
 			o.partial = true
 			break
@@ -568,6 +568,14 @@ func (s *Scanner) excludes() map[string]bool {
 		out[roots.Key(s.roots.ContainerPath(p))] = true
 	}
 	return out
+}
+
+// dedupeIn reports whether files in dir should be counted once per file ID,
+// by the same rule as a walk: Windows only does it inside its system
+// directory, and Linux always does, by link count.
+func dedupeIn(dir string) bool {
+	sys := systemRoot()
+	return sys != "" && roots.Within(sys, dir)
 }
 
 // joinPath adds one name to a directory path read from disk.
