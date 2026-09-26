@@ -81,7 +81,7 @@ jobs:
             --arch amd64,arm64 --manifest cli \
             --icon web/apple-touch-icon.png \
             --product-name kanshi --file-description "kanshi dashboard" \
-            --original-filename kanshi.exe --copyright "Copyright (c) rene-roid. MIT License." \
+            --original-filename kanshi.exe --copyright "Copyright (c) rene-roid. AGPL-3.0 License." \
             --product-version "$WINVER" --file-version "$WINVER"
 
       # Everything cross-compiles from here: CGO is off and there are no
