@@ -2,7 +2,7 @@
   "name": "@yuuki824/kanshi",
   "version": "0.2.0",
   "description": "Launch the Kanshi homeserver dashboard with npx.",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "bin": {
     "kanshi": "bin/kanshi.js"
   },

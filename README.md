@@ -11,7 +11,7 @@ open it, see what's going on, close it. When nobody is looking it does nothing a
 [![Release](https://img.shields.io/github/v/release/rene-roid/kanshi?sort=semver)](https://github.com/rene-roid/kanshi/releases/latest)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20Docker-0b7285)](#install)
 [![Image](https://img.shields.io/badge/image-ghcr.io%2Frene--roid%2Fkanshi-2496ed?logo=docker&logoColor=white)](https://github.com/rene-roid/kanshi/pkgs/container/kanshi)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 </div>
 
@@ -216,4 +216,4 @@ memory number in `docker stats` actually means.
 
 ## License
 
-[MIT](LICENSE) © rene-roid
+[AGPL-3.0](LICENSE) © rene-roid

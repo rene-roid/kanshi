@@ -29,7 +29,7 @@ ARG VERSION=dev
 LABEL org.opencontainers.image.title="kanshi" \
       org.opencontainers.image.description="A one-page, mobile-first glance at a homeserver: CPU, memory, a storage treemap and Docker containers." \
       org.opencontainers.image.source="https://github.com/rene-roid/kanshi" \
-      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.version="${VERSION}"
 
 COPY --from=build /kanshi /kanshi
