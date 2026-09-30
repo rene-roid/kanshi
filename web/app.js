@@ -376,7 +376,7 @@
       ? "That folder is gone or can't be opened — showing the closest one that is still there."
       : l.pending
         ? "Sizing " + plural(l.pending, "folder") + " — the map fills in as each one is done."
-        : "Tap a block to drill in.";
+        : (matchMedia("(pointer: fine)").matches ? "Click" : "Tap") + " a block to drill in.";
     // The server has just queued those folders. Say so now rather than at the
     // next live frame, which brings the details.
     if (l.pending && storage && !storage.scanning) {
