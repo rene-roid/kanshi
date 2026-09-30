@@ -382,7 +382,7 @@ tr.is-stopped { opacity: .55; }
 .tl-tip .t { color: var(--text-muted); margin-bottom: 2px; }
 .tl-tip div { display: flex; align-items: center; gap: 6px; }
 .tl-tip b { color: var(--text-primary); font-weight: 620; font-variant-numeric: tabular-nums; }
-.tl-axis { display: flex; justify-content: space-between; margin-top: 3px; padding-left: 34px; }
+.tl-axis { display: flex; justify-content: space-between; margin-top: 7px; padding-left: 34px; }
 .tl-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
 .tl-bar p { margin: 0; }
 .tl-actions { display: flex; gap: 6px; flex: none; }

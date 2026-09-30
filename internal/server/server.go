@@ -326,9 +326,11 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if points == nil {
 		points = []history.Point{}
 	}
+	// While the poller runs, records are its frames, so they come no closer
+	// together than a poll. The page reads a longer wait than this as a gap.
 	writeJSON(w, r, map[string]any{
 		"enabled":   true,
-		"interval":  s.cfg.HistoryInterval.Seconds(),
+		"interval":  max(s.cfg.HistoryInterval, s.cfg.PollInterval).Seconds(),
 		"retention": s.cfg.HistoryRetention.Seconds(),
 		"first":     first,
 		"last":      last,
