@@ -65,6 +65,16 @@ type Config struct {
 	// to be walked again after a restart.
 	StorageCache string
 
+	// Keep what the dashboard shows for this long, so the page can scroll
+	// back through it. Zero, the default, keeps nothing: recording has to
+	// sample whether or not anyone is watching, which is exactly what the
+	// idle poller otherwise avoids.
+	HistoryRetention time.Duration
+	// How often a history record is taken.
+	HistoryInterval time.Duration
+	// The folder history is written to.
+	HistoryDir string
+
 	// Where the host's root filesystem is mounted when Kanshi runs in a
 	// container. Empty on a bare-metal install.
 	HostRoot string
@@ -121,7 +131,10 @@ func Load(flags Flags) Config {
 		StorageMinRescan:  l.seconds("KANSHI_STORAGE_MIN_RESCAN", 30*time.Second),
 		StorageCPU:        l.float("KANSHI_STORAGE_CPU", 10),
 		TreeDepth:         l.int("KANSHI_TREE_DEPTH", 4),
-		StorageCache:      l.string("KANSHI_STORAGE_CACHE", defaultStorageCache()),
+		StorageCache:      l.string("KANSHI_STORAGE_CACHE", defaultCacheFile("storage.cache")),
+		HistoryRetention:  l.days("KANSHI_HISTORY_DAYS"),
+		HistoryInterval:   l.seconds("KANSHI_HISTORY_INTERVAL", 30*time.Second),
+		HistoryDir:        l.string("KANSHI_HISTORY_DIR", defaultCacheFile("history")),
 		HostRoot:          strings.TrimRight(l.string("KANSHI_HOST_ROOT", ""), `/\`),
 		Access:            access,
 		AccessSource:      accessSrc,
@@ -132,15 +145,15 @@ func Load(flags Flags) Config {
 	}
 }
 
-// defaultStorageCache is in the user's cache folder: ~/.cache/kanshi on Linux,
+// defaultCacheFile is in the user's cache folder: ~/.cache/kanshi on Linux,
 // %LocalAppData%\kanshi on Windows. A scratch container has no home, so there
 // it is set explicitly.
-func defaultStorageCache() string {
+func defaultCacheFile(name string) string {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "kanshi", "storage.cache")
+	return filepath.Join(dir, "kanshi", name)
 }
 
 // lookup resolves one setting against the environment, then the file.
@@ -239,6 +252,17 @@ func (l lookup) seconds(name string, def time.Duration) time.Duration {
 		return def
 	}
 	return time.Duration(n * float64(time.Second))
+}
+
+// days accepts a number of days, fractions included. Anything that is not a
+// positive number means off.
+func (l lookup) days(name string) time.Duration {
+	v, _ := l.get(name)
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n * float64(24*time.Hour))
 }
 
 func (l lookup) list(name, def string) []string {

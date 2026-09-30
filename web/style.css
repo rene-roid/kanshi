@@ -1,7 +1,7 @@
 /* ── Palette roles ───────────────────────────────────────────────────────────
    Values from the validated reference palette. Categorical slots in use: two
-   (blue = folder, orange = file); validated all-pairs in both modes, so the
-   treemap is safe under every CVD simulation. Everything else is ink, surface
+   (blue = CPU, orange = RAM on the history timeline); validated all-pairs in
+   both modes, so the timeline is safe under every CVD simulation. Everything else is ink, surface
    or a reserved status token. */
 .viz-root {
   color-scheme: light;
@@ -14,7 +14,8 @@
   --baseline:       #c3c2b7;
   --border:         rgba(11, 11, 11, 0.10);
 
-  --series-1:       #2a78d6;   /* the one categorical slot in use */
+  --series-1:       #2a78d6;   /* categorical slot 1: CPU */
+  --series-2:       #eb6834;   /* categorical slot 2: RAM, on the timeline only */
   --neutral-mark:   #c3c2b7;   /* aggregated "other" — deliberately not a slot */
   --tile:           #1c5cab;   /* blue ramp step 550; white label = 7.1:1 */
   --tile-ink:       #ffffff;
@@ -43,6 +44,7 @@
     --baseline:       #383835;
     --border:         rgba(255, 255, 255, 0.10);
     --series-1:       #3987e5;
+    --series-2:       #d95926;
     --neutral-mark:   #55544f;
     --tile:           #256abf;
     --tile-ink:       #ffffff;
@@ -64,6 +66,7 @@
   --baseline:       #383835;
   --border:         rgba(255, 255, 255, 0.10);
   --series-1:       #3987e5;
+  --series-2:       #d95926;
   --neutral-mark:   #55544f;
   --tile:           #256abf;
   --tile-ink:       #ffffff;
@@ -346,6 +349,48 @@ tr.is-stopped { opacity: .55; }
 .btn-primary { background: var(--series-1); border-color: transparent; color: #fff; }
 .err { margin: 0; color: var(--status-critical); }
 .err:empty { display: none; }
+
+/* ── History timeline ────────────────────────────────────────────────────── */
+.timeline .card-head { align-items: center; margin-bottom: 8px; }
+.rangebar { display: flex; gap: 4px; }
+.rangebar .chip { min-height: 26px; padding: 3px 9px; }
+.tl-legend { margin-bottom: 6px; }
+/* Line keys, not boxes: the legend names a line, so it shows one. */
+.key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
+.key-cpu { background: var(--series-1); }
+.key-mem { background: var(--series-2); }
+.tl-wrap { position: relative; }
+#tl-chart { display: block; width: 100%; height: 84px; overflow: visible; cursor: crosshair; touch-action: pan-y; outline: none; }
+#tl-chart:focus-visible { outline: 2px solid var(--series-1); outline-offset: 4px; border-radius: 4px; }
+#tl-chart .grid { stroke: var(--gridline); stroke-width: 1; }
+#tl-chart .base { stroke: var(--baseline); stroke-width: 1; }
+#tl-chart .tick { fill: var(--text-muted); font-size: 10px; font-family: inherit; }
+#tl-chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+#tl-chart .cpu { stroke: var(--series-1); }
+#tl-chart .mem { stroke: var(--series-2); }
+#tl-chart .hair { stroke: var(--text-muted); stroke-width: 1; }
+#tl-chart .pick { stroke: var(--text-primary); stroke-width: 2; }
+#tl-chart .dot-cpu { fill: var(--series-1); stroke: var(--surface-1); stroke-width: 2; }
+#tl-chart .dot-mem { fill: var(--series-2); stroke: var(--surface-1); stroke-width: 2; }
+.tl-tip {
+  position: absolute; top: -6px; pointer-events: none; z-index: 2;
+  padding: 6px 9px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface-1); box-shadow: 0 2px 10px rgba(0, 0, 0, .12);
+  font-size: 12px; white-space: nowrap; color: var(--text-secondary);
+}
+.tl-tip[hidden] { display: none; }
+.tl-tip .t { color: var(--text-muted); margin-bottom: 2px; }
+.tl-tip div { display: flex; align-items: center; gap: 6px; }
+.tl-tip b { color: var(--text-primary); font-weight: 620; font-variant-numeric: tabular-nums; }
+.tl-axis { display: flex; justify-content: space-between; margin-top: 3px; padding-left: 34px; }
+.tl-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.tl-bar p { margin: 0; }
+.tl-actions { display: flex; gap: 6px; flex: none; }
+.tl-actions .btn[hidden] { display: none; }
+/* Looking back: the cards the timeline scopes carry a rule down their edge,
+   and the storage map, which is always live, does not. */
+body.is-history #tl-status { color: var(--text-primary); }
+body.is-history .scoped { box-shadow: inset 3px 0 0 var(--text-muted); }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

@@ -21,6 +21,9 @@ Environment=KANSHI_CONFIG=%S/kanshi/kanshi.env
 # The folder size cache, so a restart does not walk the disk again.
 CacheDirectory=kanshi
 Environment=KANSHI_STORAGE_CACHE=%C/kanshi/storage.cache
+# History, when KANSHI_HISTORY_DAYS turns it on. State rather than cache: it
+# cannot be measured again.
+Environment=KANSHI_HISTORY_DIR=%S/kanshi/history
 Restart=on-failure
 RestartSec=5
 

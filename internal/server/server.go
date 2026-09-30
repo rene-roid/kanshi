@@ -19,6 +19,7 @@ import (
 	"github.com/rene-roid/kanshi/internal/access"
 	"github.com/rene-roid/kanshi/internal/config"
 	"github.com/rene-roid/kanshi/internal/dockerstats"
+	"github.com/rene-roid/kanshi/internal/history"
 	"github.com/rene-roid/kanshi/internal/roots"
 	"github.com/rene-roid/kanshi/internal/storage"
 	"github.com/rene-roid/kanshi/internal/vitals"
@@ -44,6 +45,7 @@ type Server struct {
 	vitals  *vitals.Reader
 	docker  *dockerstats.Client
 	storage *storage.Scanner
+	history *history.Store // nil unless KANSHI_HISTORY_DAYS is set
 	assets  *assets
 
 	// base outlives any single request. Work that mutates shared state, such
@@ -51,11 +53,12 @@ type Server struct {
 	// browser navigating away cannot abort it for everyone else.
 	base context.Context
 
-	mu      sync.RWMutex
-	latest  Frame
-	payload []byte // latest, already marshalled, for newly connected streams
-	subs    map[chan []byte]struct{}
-	lastSee time.Time
+	mu       sync.RWMutex
+	latest   Frame
+	latestAt time.Time
+	payload  []byte // latest, already marshalled, for newly connected streams
+	subs     map[chan []byte]struct{}
+	lastSee  time.Time
 
 	// wake releases the poller from its idle sleep. Buffered by one so a
 	// signal is never lost and no sender ever blocks.
@@ -79,6 +82,19 @@ func New(cfg config.Config, web fs.FS, version string, logf func(string, ...any)
 		return nil, err
 	}
 	r := roots.NewResolver(cfg.StorageRoots, cfg.HostRoot)
+	// History is an extra, so a folder that cannot be written costs the
+	// timeline, not the dashboard.
+	var h *history.Store
+	switch {
+	case cfg.HistoryRetention <= 0:
+	case cfg.HistoryDir == "":
+		logf("history is off: no folder to keep it in; set KANSHI_HISTORY_DIR")
+	default:
+		if h, err = history.Open(cfg.HistoryDir, cfg.HistoryRetention, logf); err != nil {
+			logf("history is off: %v", err)
+			h = nil
+		}
+	}
 	return &Server{
 		base:         context.Background(),
 		cfg:          cfg,
@@ -88,6 +104,7 @@ func New(cfg config.Config, web fs.FS, version string, logf func(string, ...any)
 		vitals:       vitals.New(r),
 		docker:       dockerstats.New(cfg),
 		storage:      storage.New(cfg, r, logf),
+		history:      h,
 		assets:       a,
 		subs:         make(map[chan []byte]struct{}),
 		wake:         make(chan struct{}, 1),
@@ -120,7 +137,7 @@ func (s *Server) sampleOnce(ctx context.Context) Frame {
 		payload, _ = json.Marshal(Frame{Error: err.Error()})
 	}
 	s.mu.Lock()
-	s.latest, s.payload = frame, payload
+	s.latest, s.payload, s.latestAt = frame, payload, time.Now()
 	s.mu.Unlock()
 	return frame
 }
@@ -229,6 +246,126 @@ func (s *Server) broadcast(payload []byte) {
 	}
 }
 
+/* ── history ────────────────────────────────────────────────────────────── */
+
+// record writes one history entry every HistoryInterval, watched or not. While
+// a browser keeps the poller busy it reuses the poller's latest frame; once
+// the poller has gone idle it samples on its own. Every rate is a delta
+// against the previous sample, so an idle-time record averages the whole
+// interval rather than the last five seconds.
+func (s *Server) record(ctx context.Context) {
+	if s.history == nil {
+		return
+	}
+	defer s.history.Close()
+	tick := time.NewTicker(s.cfg.HistoryInterval)
+	defer tick.Stop()
+	var prev time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		s.mu.RLock()
+		frame, at := s.latest, s.latestAt
+		s.mu.RUnlock()
+		if s.idle() || frame.Vitals == nil {
+			frame = s.sampleOnce(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			at = time.Now()
+		} else if !at.After(prev) {
+			// The poller has not ticked since the last record, which only
+			// happens when records are more frequent than polls.
+			continue
+		}
+		prev = at
+		if err := s.history.Add(at, frame.Vitals.CPU.Percent, frame.Vitals.Memory.Percent, historyFrame(frame)); err != nil {
+			s.logf("history: %v", err)
+		}
+	}
+}
+
+// historyFrame is what a record keeps: the vitals and containers, without
+// the parts a look back has no use for. Port mappings are most of a
+// container's bytes and a link into the past opens the present anyway.
+func historyFrame(f Frame) []byte {
+	out := struct {
+		Vitals *vitals.Sample      `json:"vitals"`
+		Docker *dockerstats.Result `json:"docker"`
+	}{Vitals: f.Vitals}
+	if f.Docker != nil {
+		d := *f.Docker
+		d.Containers = make([]dockerstats.Container, len(f.Docker.Containers))
+		for i, c := range f.Docker.Containers {
+			c.Ports, c.Blkio, c.Image = nil, nil, ""
+			d.Containers[i] = c
+		}
+		out.Docker = &d
+	}
+	b, _ := json.Marshal(out)
+	return b
+}
+
+// handleHistory is the timeline: /api/history?from=…&to=…&n=… in Unix
+// seconds, at most n points (default 600) with the busiest kept per bucket.
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		writeJSON(w, r, map[string]bool{"enabled": false})
+		return
+	}
+	q := r.URL.Query()
+	now := time.Now().Unix()
+	to := queryInt(q.Get("to"), now)
+	from := queryInt(q.Get("from"), to-3600)
+	n := int(min(max(queryInt(q.Get("n"), 600), 10), 2000))
+	first, last := s.history.Span()
+	points := s.history.Series(from, to, n)
+	if points == nil {
+		points = []history.Point{}
+	}
+	writeJSON(w, r, map[string]any{
+		"enabled":   true,
+		"interval":  s.cfg.HistoryInterval.Seconds(),
+		"retention": s.cfg.HistoryRetention.Seconds(),
+		"first":     first,
+		"last":      last,
+		"points":    points,
+	})
+}
+
+// handleHistoryAt returns one recorded frame: /api/history/at?t=…&dir=…,
+// where dir is 0 for the record nearest t, -1 for the one before and 1 for
+// the one after.
+func (s *Server) handleHistoryAt(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		http.Error(w, "history is off", http.StatusNotFound)
+		return
+	}
+	q := r.URL.Query()
+	t, err := strconv.ParseInt(q.Get("t"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad t", http.StatusBadRequest)
+		return
+	}
+	p, frame, ok := s.history.At(t, int(queryInt(q.Get("dir"), 0)))
+	if !ok {
+		http.Error(w, "nothing recorded there", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, r, map[string]any{"t": p.T, "frame": frame})
+}
+
+func queryInt(v string, def int64) int64 {
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
 /* ── handlers ───────────────────────────────────────────────────────────── */
 
 func (s *Server) Handler() http.Handler {
@@ -242,6 +379,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/access", s.handleAccess)
 	mux.HandleFunc("POST /api/access", s.handleSetAccess)
 	mux.HandleFunc("GET /api/stream", s.handleStream)
+	mux.HandleFunc("GET /api/history", s.handleHistory)
+	mux.HandleFunc("GET /api/history/at", s.handleHistoryAt)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /static/", s.assets.serveStatic)
 	mux.HandleFunc("GET /{$}", s.assets.serveIndex)
@@ -472,8 +611,9 @@ func (s *Server) Run(ctx context.Context, mode access.Mode) error {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); s.Poll(ctx) }()
+	go func() { defer wg.Done(); s.record(ctx) }()
 	go func() { defer wg.Done(); s.storage.Loop(ctx) }()
 	go func() { defer wg.Done(); mgr.Watch(ctx) }()
 

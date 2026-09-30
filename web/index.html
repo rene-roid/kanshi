@@ -23,8 +23,39 @@
 
 <main id="app">
 
+  <!-- ───────── History: scopes every card below except the storage map ───────── -->
+  <section class="card timeline" id="timeline" aria-labelledby="tl-h" hidden>
+    <div class="card-head">
+      <h2 id="tl-h">History</h2>
+      <div class="rangebar" id="tl-range" role="group" aria-label="Time range">
+        <button class="chip" data-range="900" type="button">15m</button>
+        <button class="chip is-on" data-range="3600" type="button">1h</button>
+        <button class="chip" data-range="21600" type="button">6h</button>
+        <button class="chip" data-range="86400" type="button">24h</button>
+        <button class="chip" data-range="604800" type="button">7d</button>
+      </div>
+    </div>
+    <ul class="legend tl-legend">
+      <li><i class="key key-cpu"></i>CPU</li>
+      <li><i class="key key-mem"></i>RAM</li>
+    </ul>
+    <div class="tl-wrap" id="tl-wrap">
+      <svg id="tl-chart" tabindex="0" role="img" aria-label="CPU and RAM over time. Click or use the arrow keys to look back."></svg>
+      <div class="tl-tip" id="tl-tip" hidden></div>
+    </div>
+    <div class="tl-axis muted small"><span id="tl-from"></span><span id="tl-to">now</span></div>
+    <div class="tl-bar">
+      <p id="tl-status" class="muted small" aria-live="polite">Live. Tap the chart to see an earlier moment.</p>
+      <span class="tl-actions">
+        <button class="btn" id="tl-prev" type="button" aria-label="Earlier record" title="Earlier record (←)">←</button>
+        <button class="btn" id="tl-next" type="button" aria-label="Later record" title="Later record (→)" disabled>→</button>
+        <button class="btn btn-primary" id="tl-live" type="button" hidden>Back to live</button>
+      </span>
+    </div>
+  </section>
+
   <!-- ───────── CPU: the hero figure, exactly one per view ───────── -->
-  <section class="card" aria-labelledby="cpu-h">
+  <section class="card scoped" aria-labelledby="cpu-h">
     <div class="card-head">
       <h2 id="cpu-h">Processor</h2>
       <span id="cpu-meta" class="muted small">—</span>
@@ -40,7 +71,7 @@
   </section>
 
   <!-- ───────── Memory + filesystem meters ───────── -->
-  <section class="card" aria-labelledby="mem-h">
+  <section class="card scoped" aria-labelledby="mem-h">
     <div class="card-head"><h2 id="mem-h">Memory &amp; volumes</h2></div>
     <div id="meters" class="meters"></div>
   </section>
@@ -90,7 +121,7 @@
   </section>
 
   <!-- ───────── Containers ───────── -->
-  <section class="card" aria-labelledby="ctr-h">
+  <section class="card scoped" aria-labelledby="ctr-h">
     <div class="card-head">
       <h2 id="ctr-h">Containers</h2>
       <span id="ctr-meta" class="muted small">—</span>

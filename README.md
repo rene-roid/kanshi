@@ -4,8 +4,8 @@
 
 **A one-page, mobile-first glance at a machine: CPU, memory, a storage map, and every Docker container.**
 
-One small program for Linux or Windows. No database, no agents, no history, no alerting —
-open it, see what's going on, close it. When nobody is looking it does nothing at all.
+One small program for Linux or Windows. No database, no agents, no alerting — open it, see
+what's going on, close it. When nobody is looking it does nothing at all, unless you turn on history.
 
 [![CI](https://github.com/rene-roid/kanshi/actions/workflows/ci.yml/badge.svg)](https://github.com/rene-roid/kanshi/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/rene-roid/kanshi?sort=semver)](https://github.com/rene-roid/kanshi/releases/latest)
@@ -138,6 +138,9 @@ Precedence is: flag, then environment, then file, then the default.
 | `KANSHI_STORAGE_CPU` | | `10` | Share of one core, in %, measuring folders may use. `100` = unthrottled |
 | `KANSHI_TREE_DEPTH` | | `4` | Folder levels remembered from each measurement; deeper folders are measured when you open them |
 | `KANSHI_STORAGE_CACHE` | | `~/.cache/kanshi/storage.cache`, `%LocalAppData%\kanshi\storage.cache`; `/data/storage.cache` in the image | Where folder sizes are cached, so a restart does not measure them again |
+| `KANSHI_HISTORY_DAYS` | | `0` (off) | Days of CPU, memory and container stats to keep, so the page can scroll back through them. Recording samples whether or not anyone is watching |
+| `KANSHI_HISTORY_INTERVAL` | | `30` | Seconds between history records |
+| `KANSHI_HISTORY_DIR` | | `~/.cache/kanshi/history`, `%LocalAppData%\kanshi\history`; `/data/history` in the image | Where history is kept |
 | `KANSHI_POLL_INTERVAL` | | `5` | Seconds between live updates |
 | `KANSHI_IDLE_TIMEOUT` | | `30` | Seconds with no browser before everything stops |
 | `KANSHI_DOCKER_CONCURRENCY` | | `8` | Parallel container stat requests |

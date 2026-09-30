@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -16,6 +17,9 @@ import (
 
 	"github.com/rene-roid/kanshi/internal/access"
 	"github.com/rene-roid/kanshi/internal/config"
+	"github.com/rene-roid/kanshi/internal/dockerstats"
+	"github.com/rene-roid/kanshi/internal/history"
+	"github.com/rene-roid/kanshi/internal/vitals"
 )
 
 var web = fstest.MapFS{
@@ -214,3 +218,60 @@ func ioNopCloser(s string) *nopBody { return &nopBody{strings.NewReader(s)} }
 type nopBody struct{ *strings.Reader }
 
 func (nopBody) Close() error { return nil }
+
+func TestHistory(t *testing.T) {
+	s := newServer(t)
+	if body := do(s, "GET", "/api/history", nil).Body.String(); !strings.Contains(body, `"enabled":false`) {
+		t.Fatalf("history off: %s", body)
+	}
+	if code := do(s, "GET", "/api/history/at?t=1", nil).Code; code != http.StatusNotFound {
+		t.Errorf("a record with history off = %d, want 404", code)
+	}
+
+	h, err := history.Open(t.TempDir(), time.Hour, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	s.history = h
+	now := time.Now()
+	for i := range 3 {
+		v := vitals.Sample{CPU: vitals.CPU{Percent: float64(10 * i)}}
+		d := dockerstats.Result{Containers: []dockerstats.Container{{
+			ID: "abc", Name: "web", Ports: []dockerstats.Port{{Public: 80, Private: 8080}},
+		}}}
+		frame := historyFrame(Frame{Vitals: &v, Docker: &d})
+		if err := h.Add(now.Add(time.Duration(i-3)*time.Minute), v.CPU.Percent, 0, frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var series struct {
+		Enabled bool
+		Points  [][3]float64
+	}
+	if err := json.Unmarshal(do(s, "GET", "/api/history", nil).Body.Bytes(), &series); err != nil {
+		t.Fatal(err)
+	}
+	if !series.Enabled || len(series.Points) != 3 || series.Points[2][1] != 20 {
+		t.Fatalf("series = %+v", series)
+	}
+
+	var at struct {
+		T     int64
+		Frame struct {
+			Vitals vitals.Sample
+			Docker dockerstats.Result
+		}
+	}
+	target := "/api/history/at?dir=-1&t=" + strconv.FormatInt(int64(series.Points[2][0]), 10)
+	if err := json.Unmarshal(do(s, "GET", target, nil).Body.Bytes(), &at); err != nil {
+		t.Fatal(err)
+	}
+	if at.T != int64(series.Points[1][0]) || at.Frame.Vitals.CPU.Percent != 10 {
+		t.Errorf("record before the last = %+v", at)
+	}
+	if c := at.Frame.Docker.Containers; len(c) != 1 || c[0].Name != "web" || c[0].Ports != nil {
+		t.Errorf("recorded containers = %+v, want web without its ports", c)
+	}
+}
