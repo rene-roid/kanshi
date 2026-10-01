@@ -409,27 +409,20 @@ func (s *Scanner) enqueue(jobs []job, urgent bool) {
 		if s.current != nil && roots.Within(s.current.key, j.key) {
 			continue
 		}
-		covered := -1
-		for i, q := range s.queue {
-			if roots.Within(q.key, j.key) {
-				covered = i
-				break
-			}
+		// An earlier job in this batch may already have been moved up front
+		// for a folder that covers this one too.
+		if coveredBy(head, j.key) >= 0 {
+			continue
 		}
-		if covered >= 0 {
+		if covered := coveredBy(s.queue, j.key); covered >= 0 {
 			if urgent {
 				head = append(head, s.queue[covered])
 				s.queue = append(s.queue[:covered], s.queue[covered+1:]...)
 			}
 			continue
 		}
-		kept := s.queue[:0]
-		for _, q := range s.queue {
-			if !roots.Within(j.key, q.key) {
-				kept = append(kept, q)
-			}
-		}
-		s.queue = kept
+		s.queue = without(s.queue, j.key)
+		head = without(head, j.key)
 		if urgent {
 			head = append(head, j)
 		} else {
@@ -444,18 +437,40 @@ func (s *Scanner) enqueue(jobs []job, urgent bool) {
 	}
 }
 
+// coveredBy returns the index of the first job in list that key is inside, or
+// -1.
+func coveredBy(list []job, key string) int {
+	for i, q := range list {
+		if roots.Within(q.key, key) {
+			return i
+		}
+	}
+	return -1
+}
+
+// without drops the jobs inside key, which a walk of key makes redundant.
+func without(list []job, key string) []job {
+	kept := list[:0]
+	for _, q := range list {
+		if !roots.Within(key, q.key) {
+			kept = append(kept, q)
+		}
+	}
+	return kept
+}
+
 // next takes the most urgent job off the queue, or reports that there is
-// none left.
+// none left. The job leaves the queue and becomes current in one step, so a
+// listing in between can neither queue a folder inside it a second time nor
+// see the queue briefly empty.
 func (s *Scanner) next() (job, bool) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(s.queue) == 0 {
-		s.current = nil
-		s.mu.Unlock()
 		return job{}, false
 	}
 	j := s.queue[0]
 	s.queue = s.queue[1:]
-	s.mu.Unlock()
 
 	var total int64
 	if c, ok := s.cache.get(j.key); ok {
@@ -463,9 +478,7 @@ func (s *Scanner) next() (job, bool) {
 	}
 	s.progressTotal.Store(total)
 	s.progressDone.Store(0)
-	s.mu.Lock()
 	s.current = &j
-	s.mu.Unlock()
 	return j, true
 }
 
@@ -536,6 +549,9 @@ func (s *Scanner) walkOne(ctx context.Context, w *walker, j job) {
 
 	at := float64(time.Now().UnixNano()) / 1e9
 	s.mu.Lock()
+	// Finished, so no longer covers anything: a folder inside it that this
+	// walk went too deep to cache has to be queued, not left to it.
+	s.current = nil
 	s.updatedAt = &at
 	if err != nil {
 		msg := "storage cache: " + err.Error()

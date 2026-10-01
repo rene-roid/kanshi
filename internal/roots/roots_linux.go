@@ -117,7 +117,13 @@ func DiskUsage(path string) (Usage, error) {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return Usage{}, err
 	}
-	bsize := uint64(st.Bsize)
+	// Block counts are in units of the fragment size, as df reads them. It
+	// usually equals Bsize, but some FUSE and network filesystems report a
+	// larger preferred I/O size there.
+	bsize := uint64(st.Frsize)
+	if bsize == 0 {
+		bsize = uint64(st.Bsize)
+	}
 	total := st.Blocks * bsize
 	// Bavail excludes root-reserved blocks, so used+free won't equal total.
 	// "Used" is reported the way df does it.
