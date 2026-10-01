@@ -209,6 +209,28 @@ func TestStreamSendsFrames(t *testing.T) {
 	}
 }
 
+func TestIdlePollerDropsTheLastFrame(t *testing.T) {
+	s := newServer(t)
+	s.latest, s.payload = Frame{Error: "old"}, []byte(`{"error":"old"}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Poll(ctx)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		s.mu.RLock()
+		payload := s.payload
+		s.mu.RUnlock()
+		if payload == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("an idle poller still hands out its last frame")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func ioNopCloser(s string) *nopBody { return &nopBody{strings.NewReader(s)} }
 
 type nopBody struct{ *strings.Reader }

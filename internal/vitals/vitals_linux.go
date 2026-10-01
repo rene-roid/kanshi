@@ -328,24 +328,49 @@ func partitionDevices() map[string]bool {
 		}
 		names = append(names, fields[3])
 	}
-	// /proc/partitions lists a disk before its partitions, so walking it
-	// backwards means a partition is always seen before its parent disk.
+	return countedDevices(names)
+}
+
+// countedDevices keeps every name that is not a disk with partitions listed.
+func countedDevices(names []string) map[string]bool {
 	out := make(map[string]bool, len(names))
-	var kept []string
-	for i := len(names) - 1; i >= 0; i-- {
-		name := names[i]
-		last := name[len(name)-1]
-		if last >= '0' && last <= '9' {
-			out[name] = true
-			kept = append(kept, name)
-			continue
-		}
-		if len(kept) == 0 || !strings.HasPrefix(kept[len(kept)-1], name) {
-			out[name] = true
-			kept = append(kept, name)
+	for _, name := range names {
+		out[name] = true
+	}
+	for _, disk := range names {
+		for _, name := range names {
+			if isPartitionOf(name, disk) {
+				delete(out, disk)
+				break
+			}
 		}
 	}
 	return out
+}
+
+// isPartitionOf reports whether part is a partition of disk: sda1 of sda, or
+// nvme0n1p1 of nvme0n1. A disk whose name ends in a digit puts a "p" before
+// the partition number, which is also what keeps dm-10 from passing for a
+// partition of dm-1.
+func isPartitionOf(part, disk string) bool {
+	num, ok := strings.CutPrefix(part, disk)
+	if !ok || disk == "" {
+		return false
+	}
+	if last := disk[len(disk)-1]; last >= '0' && last <= '9' {
+		if num, ok = strings.CutPrefix(num, "p"); !ok {
+			return false
+		}
+	}
+	if num == "" {
+		return false
+	}
+	for _, c := range []byte(num) {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 /* ── temperature ────────────────────────────────────────────────────────── */
