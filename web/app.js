@@ -376,7 +376,7 @@
       ? "That folder is gone or can't be opened — showing the closest one that is still there."
       : l.pending
         ? "Sizing " + plural(l.pending, "folder") + " — the map fills in as each one is done."
-        : "Tap a block to drill in.";
+        : (matchMedia("(pointer: fine)").matches ? "Click" : "Tap") + " a block to drill in.";
     // The server has just queued those folders. Say so now rather than at the
     // next live frame, which brings the details.
     if (l.pending && storage && !storage.scanning) {
@@ -881,7 +881,7 @@
   function renderTimelineStatus() {
     const live = tl.at === null;
     $("#tl-status").textContent = live
-      ? "Live. Tap the chart to see an earlier moment."
+      ? "Live. " + (matchMedia("(pointer: fine)").matches ? "Click" : "Tap") + " the chart to see an earlier moment."
       : "Showing " + clock(tl.at, true) + ", " + ago(tl.at) + ". The storage map stays live.";
     $("#tl-live").hidden = live;
     $("#tl-next").disabled = live;
@@ -908,6 +908,7 @@
   setInterval(() => {
     if (!document.hidden && !$("#timeline").hidden) loadTimeline();
   }, 30000);
+  renderTimelineStatus();
 
   /* ── live stream ────────────────────────────────────────────────────── */
   let source = null, retry = 1000, retryTimer = null;

@@ -82,6 +82,8 @@
 html { -webkit-text-size-adjust: 100%; }
 
 body {
+  --page-max: 760px;
+  --gutter: 12px;
   margin: 0;
   padding: 0 0 env(safe-area-inset-bottom);
   background: var(--plane);
@@ -120,7 +122,7 @@ body.is-stale { opacity: .55; }          /* hold the last render, never a skelet
 .conn.live i { background: var(--status-good); }
 .conn.down i { background: var(--status-critical); }
 
-main { max-width: 760px; margin: 0 auto; padding: 12px 12px 28px; display: grid; gap: 12px; min-width: 0; }
+main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 28px; display: grid; gap: 12px; min-width: 0; }
 
 /* ── Cards ───────────────────────────────────────────────────────────────── */
 .card {
@@ -395,7 +397,33 @@ body.is-history .scoped { box-shadow: inset 3px 0 0 var(--text-muted); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+/* ── Wider screens ─────────────────────────────────────────────────────────
+   The phone layout above is the base. Tablets pair the two short cards side by
+   side and give the storage map and containers the full row; desktops fold all
+   four into two rows so the whole page fits on one screen. */
 @media (min-width: 560px) {
   #treemap { height: 380px; }
   .hero { font-size: 64px; }
+}
+@media (min-width: 768px) {
+  body { --page-max: 1180px; --gutter: 20px; }
+  main { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-block: 16px 32px; gap: 16px; }
+  /* Line the title up with the cards, which stop growing at --page-max. */
+  .topbar { padding-inline: max(var(--gutter), calc((100% - var(--page-max)) / 2 + var(--gutter))); }
+  main > * { grid-column: 1 / -1; }
+  .card-cpu, .card-mem { grid-column: auto; }
+  .card { padding: 18px; }
+  /* Paired cards stretch to the taller one; keep the core bars on the floor. */
+  .card-cpu { display: flex; flex-direction: column; }
+  .card-cpu .cores { margin-top: auto; padding-top: 14px; height: 48px; }
+  #treemap { height: 440px; }
+}
+@media (min-width: 1200px) {
+  body { --page-max: 1680px; --gutter: 24px; }
+  /* One 7/5 split for both rows, so the columns line up down the page. */
+  main { grid-template-columns: 7fr 5fr; padding-block: 20px 36px; gap: 18px; }
+  .card-cpu, .card-stor { grid-column: 1; }
+  .card-mem, .card-ctr  { grid-column: 2; }
+  .hero { font-size: 72px; }
+  #treemap { height: clamp(440px, 56vh, 620px); }
 }
