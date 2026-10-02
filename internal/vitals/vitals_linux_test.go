@@ -14,3 +14,16 @@ func TestParsing(t *testing.T) {
 		t.Errorf("atou = %v", v)
 	}
 }
+
+func TestCountedDevices(t *testing.T) {
+	got := countedDevices([]string{"sda", "sda1", "sda2", "sdb", "nvme0n1", "nvme0n1p1", "mmcblk0", "mmcblk0p1", "dm-1", "dm-10"})
+	want := []string{"sda1", "sda2", "sdb", "nvme0n1p1", "mmcblk0p1", "dm-1", "dm-10"}
+	if len(got) != len(want) {
+		t.Errorf("devices = %v, want %v", got, want)
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Errorf("devices = %v, missing %s", got, name)
+		}
+	}
+}

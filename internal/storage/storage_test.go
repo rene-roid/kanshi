@@ -351,6 +351,15 @@ func TestQueueLeavesNestedFoldersToTheOuterWalk(t *testing.T) {
 	if got := keys(); len(got) != 2 || got[0] != x {
 		t.Errorf("queue = %v, want x moved to the front for x/a", got)
 	}
+
+	// Once x has been moved up front for x/a, a sibling in the same batch is
+	// covered by it too, rather than queued for a second walk.
+	xb := filepath.Join("/x", "b")
+	s.enqueue([]job{j(y)}, true)
+	s.enqueue([]job{j(xa), j(xb)}, true)
+	if got := keys(); len(got) != 2 || got[0] != x || got[1] != y {
+		t.Errorf("queue = %v, want x then y and nothing inside x", got)
+	}
 }
 
 func TestDeleteSubtreeLeavesSiblingsAndOtherRoots(t *testing.T) {

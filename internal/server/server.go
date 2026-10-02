@@ -172,6 +172,14 @@ func (s *Server) Poll(ctx context.Context) {
 			// Nobody is watching. The timer is only a safety net: waking
 			// here does nothing but check again, and the baselines are only
 			// re-seeded once a browser has actually come back.
+			//
+			// The last frame only gets older from here, so it is dropped: a
+			// browser that comes back hours later waits the second it takes
+			// to wake up rather than being shown containers and load from
+			// whenever it left, marked live.
+			s.mu.Lock()
+			s.latest, s.payload = Frame{}, nil
+			s.mu.Unlock()
 			timer.Reset(time.Minute)
 			select {
 			case <-ctx.Done():
@@ -543,9 +551,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		out = gz
 	}
 	w.WriteHeader(http.StatusOK)
-	send := func(chunks ...string) {
+	// Byte slices, so a frame goes out as is rather than being copied into a
+	// string for every subscriber on every tick.
+	send := func(chunks ...[]byte) {
 		for _, c := range chunks {
-			_, _ = io.WriteString(out, c)
+			_, _ = out.Write(c)
 		}
 		if gz != nil {
 			_ = gz.Flush()
@@ -559,9 +569,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	payload := s.payload
 	s.mu.RUnlock()
 	if payload != nil {
-		send("data: ", string(payload), "\n\n")
+		send(sseData, payload, sseEnd)
 	} else {
-		send(": hello\n\n") // gets the headers and the gzip header out now
+		send(sseHello) // gets the headers and the gzip header out now
 	}
 
 	keepalive := time.NewTicker(25 * time.Second)
@@ -577,13 +587,20 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case payload := <-ch:
 			s.touch()
-			send("data: ", string(payload), "\n\n")
+			send(sseData, payload, sseEnd)
 		case <-keepalive.C:
 			// Keeps mobile proxies from closing an idle stream.
-			send(": keepalive\n\n")
+			send(sseKeepalive)
 		}
 	}
 }
+
+var (
+	sseData      = []byte("data: ")
+	sseEnd       = []byte("\n\n")
+	sseHello     = []byte(": hello\n\n")
+	sseKeepalive = []byte(": keepalive\n\n")
+)
 
 /* ── lifecycle ──────────────────────────────────────────────────────────── */
 
