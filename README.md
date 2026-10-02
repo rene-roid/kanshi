@@ -4,8 +4,8 @@
 
 **A one-page, mobile-first glance at a machine: CPU, memory, a storage map, and every Docker container.**
 
-One small program for Linux or Windows. No database, no agents, no history, no alerting —
-open it, see what's going on, close it. When nobody is looking it does nothing at all.
+One small program for Linux or Windows. No database, no agents, no alerting — open it, see
+what's going on, close it. When nobody is looking it does nothing at all, unless you turn on history.
 
 [![CI](https://github.com/rene-roid/kanshi/actions/workflows/ci.yml/badge.svg)](https://github.com/rene-roid/kanshi/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/rene-roid/kanshi?sort=semver)](https://github.com/rene-roid/kanshi/releases/latest)
@@ -41,6 +41,7 @@ open it, see what's going on, close it. When nobody is looking it does nothing a
 - 🖥 **Linux and Windows** — one executable per platform, or a 10 MB Docker image
 - 🔒 **Private by default** — only this computer can open it until you say otherwise; then pick your LAN, your Tailscale network, or both
 - 😴 **Idles to zero** — with no browser open it stops reading stats, stops talking to Docker, and stops scanning disks
+- 🕰 **History, if you want it** — off by default; turn it on from the dashboard to scroll back through CPU, memory and containers. Kanshi then keeps taking readings while nobody is looking
 - 🪶 **Tiny** — ~8 MB of memory, no dependencies, nothing to install alongside it
 
 ## Install
@@ -138,6 +139,9 @@ Precedence is: flag, then environment, then file, then the default.
 | `KANSHI_STORAGE_CPU` | | `10` | Share of one core, in %, measuring folders may use. `100` = unthrottled |
 | `KANSHI_TREE_DEPTH` | | `4` | Folder levels remembered from each measurement; deeper folders are measured when you open them |
 | `KANSHI_STORAGE_CACHE` | | `~/.cache/kanshi/storage.cache`, `%LocalAppData%\kanshi\storage.cache`; `/data/storage.cache` in the image | Where folder sizes are cached, so a restart does not measure them again |
+| `KANSHI_HISTORY_DAYS` | | `0` (off) | Days of CPU, memory and container stats to keep, so the page can scroll back through them. Recording samples whether or not anyone is watching. The **History** button on the dashboard turns it on and off, from this computer only |
+| `KANSHI_HISTORY_INTERVAL` | | `30` | Seconds between history records |
+| `KANSHI_HISTORY_DIR` | | `~/.cache/kanshi/history`, `%LocalAppData%\kanshi\history`; `/data/history` in the image | Where history is kept |
 | `KANSHI_POLL_INTERVAL` | | `5` | Seconds between live updates |
 | `KANSHI_IDLE_TIMEOUT` | | `30` | Seconds with no browser before everything stops |
 | `KANSHI_DOCKER_CONCURRENCY` | | `8` | Parallel container stat requests |
@@ -205,6 +209,9 @@ update is ~16 KB of JSON but about 2 KB on the wire.
 | `GET /api/storage/dir?root=0&path=home/you` | One folder, listed live; subfolders not measured yet come back `pending` and are queued |
 | `POST /api/storage/rescan?root=0&path=home/you` | Re-measures that folder's subfolders; needs the `X-Kanshi: 1` header |
 | `GET /api/access`, `POST /api/access` | The access mode; changing it only works from this computer |
+| `GET /api/history?from=…&to=…&n=…` | Whether history is on and, if so, CPU and RAM over that range |
+| `POST /api/history` | Turns history on (`{"days":7}`) or off (`{"days":0}`); only works from this computer |
+| `GET /api/history/at?t=…&dir=…` | One recorded moment: the nearest to `t`, or the one before (`-1`) or after (`1`) it |
 | `GET /api/config` | Version, OS and intervals |
 | `GET /healthz` | `{"ok":true}` |
 

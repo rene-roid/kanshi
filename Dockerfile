@@ -41,6 +41,7 @@ ENV KANSHI_HOST_ROOT=/hostfs
 # Folder sizes are cached here so a restart does not walk the disk again. The
 # root filesystem is read-only, so this has to be a volume.
 ENV KANSHI_STORAGE_CACHE=/data/storage.cache
+ENV KANSHI_HISTORY_DIR=/data/history
 VOLUME /data
 
 EXPOSE 8100

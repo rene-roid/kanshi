@@ -19,6 +19,7 @@ import (
 	"github.com/rene-roid/kanshi/internal/access"
 	"github.com/rene-roid/kanshi/internal/config"
 	"github.com/rene-roid/kanshi/internal/dockerstats"
+	"github.com/rene-roid/kanshi/internal/history"
 	"github.com/rene-roid/kanshi/internal/roots"
 	"github.com/rene-roid/kanshi/internal/storage"
 	"github.com/rene-roid/kanshi/internal/vitals"
@@ -51,11 +52,12 @@ type Server struct {
 	// browser navigating away cannot abort it for everyone else.
 	base context.Context
 
-	mu      sync.RWMutex
-	latest  Frame
-	payload []byte // latest, already marshalled, for newly connected streams
-	subs    map[chan []byte]struct{}
-	lastSee time.Time
+	mu       sync.RWMutex
+	latest   Frame
+	latestAt time.Time
+	payload  []byte // latest, already marshalled, for newly connected streams
+	subs     map[chan []byte]struct{}
+	lastSee  time.Time
 
 	// wake releases the poller from its idle sleep. Buffered by one so a
 	// signal is never lost and no sender ever blocks.
@@ -68,6 +70,15 @@ type Server struct {
 	accessSource config.Source
 	saveOnce     sync.Once
 	saveOK       bool
+
+	// History can be turned on and off from the page, so the store is only
+	// reached through historyStore. It is nil while history is off; days is
+	// what is kept while it is on, and what the page offers while it is off.
+	historyMu   sync.Mutex
+	history     *history.Store
+	historyStop func() // stops the recorder and waits for it
+	historyDays float64
+	historySrc  config.Source
 
 	// OnReady, when set, runs once the dashboard is listening.
 	OnReady func()
@@ -88,6 +99,8 @@ func New(cfg config.Config, web fs.FS, version string, logf func(string, ...any)
 		vitals:       vitals.New(r),
 		docker:       dockerstats.New(cfg),
 		storage:      storage.New(cfg, r, logf),
+		historyDays:  defaultHistoryDays(cfg),
+		historySrc:   cfg.HistorySource,
 		assets:       a,
 		subs:         make(map[chan []byte]struct{}),
 		wake:         make(chan struct{}, 1),
@@ -120,7 +133,7 @@ func (s *Server) sampleOnce(ctx context.Context) Frame {
 		payload, _ = json.Marshal(Frame{Error: err.Error()})
 	}
 	s.mu.Lock()
-	s.latest, s.payload = frame, payload
+	s.latest, s.payload, s.latestAt = frame, payload, time.Now()
 	s.mu.Unlock()
 	return frame
 }
@@ -250,6 +263,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/access", s.handleAccess)
 	mux.HandleFunc("POST /api/access", s.handleSetAccess)
 	mux.HandleFunc("GET /api/stream", s.handleStream)
+	mux.HandleFunc("GET /api/history", s.handleHistory)
+	mux.HandleFunc("POST /api/history", s.handleSetHistory)
+	mux.HandleFunc("GET /api/history/at", s.handleHistoryAt)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /static/", s.assets.serveStatic)
 	mux.HandleFunc("GET /{$}", s.assets.serveIndex)
@@ -488,6 +504,16 @@ func (s *Server) Run(ctx context.Context, mode access.Mode) error {
 		go s.OnReady()
 	}
 
+	if s.cfg.HistoryRetention > 0 {
+		s.historyMu.Lock()
+		if err := s.startHistory(s.historyDays); err != nil {
+			// History is an extra, so a folder that cannot be written costs
+			// the timeline, not the dashboard.
+			s.logf("history is off: %v", err)
+		}
+		s.historyMu.Unlock()
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(3)
 	go func() { defer wg.Done(); s.Poll(ctx) }()
@@ -502,6 +528,9 @@ func (s *Server) Run(ctx context.Context, mode access.Mode) error {
 	mgr.Close()
 	s.docker.Close()
 	wg.Wait()
+	s.historyMu.Lock()
+	s.stopHistory()
+	s.historyMu.Unlock()
 	s.storage.Close()
 	return nil
 }

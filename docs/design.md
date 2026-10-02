@@ -1,8 +1,8 @@
 # How kanshi works
 
-Kanshi is deliberately small: a glance-and-go dashboard, not a monitoring platform. There is no history, no
-alerting and no login — that is Grafana or netdata territory. What it does do, it tries to do at close to zero
-cost, because it usually runs on the same small box it is watching.
+Kanshi is deliberately small: a glance-and-go dashboard, not a monitoring platform. There is no alerting and no
+login, and history is off unless asked for — dashboards and queries over it are Grafana or netdata territory. What
+it does do, it tries to do at close to zero cost, because it usually runs on the same small box it is watching.
 
 ## It stops working when you stop looking
 
@@ -51,6 +51,30 @@ query, and one walk at a time is the only writer, so a map and a file do the job
 missing, unreadable or from another version is simply started over. It lives in the user's cache folder, `/data`
 in the image (a volume, since the root filesystem is read-only), or the systemd unit's `CacheDirectory`. If it
 cannot be written, kanshi logs it and keeps sizes in memory instead.
+
+## History is a line per record, in hourly files
+
+With history on, kanshi records what the processor, memory and container cards show every
+`KANSHI_HISTORY_INTERVAL` (30 s), and the page grows a timeline to scroll back through them. This is the one
+feature that breaks the rule above: recording has to sample whether or not anyone is watching, so it is off by
+default. It is turned on from the dashboard's History button, or with `KANSHI_HISTORY_DAYS`. The button follows
+the same rules as the network setting below: only from this computer, and not when the environment sets it.
+Turning it off stops the recorder and keeps what was recorded; turning it back on picks it up again, minus
+whatever has aged out. While a browser keeps the poller busy, a record reuses its latest frame. Once the poller is idle, the
+recorder samples on its own; every rate is a delta against the previous sample, so an idle-time record averages
+its whole interval.
+
+Records go to one gzip file per clock hour, plus a new one on every start, named after its first record's time. A
+record is one line: its time, CPU% and RAM% as plain text, then the frame as JSON without port mappings (most
+of its bytes, and a link into the past would open the present anyway). The gzip stream is flushed after each
+line, so the current file is readable as it grows and a crash loses at most the record being written. Files are
+never reopened for appending, because a stream torn by a crash would hide anything written after it.
+
+The three leading numbers are all the timeline draws, so they are read into memory at startup and kept for the
+whole retention window, about 16 bytes a record. A frame is only read back when someone picks a moment, from the
+one file that holds it. Zoomed out past one point per pixel, each point is the busiest record in its stretch:
+averaging would sand off the spike you went looking for. The storage map has no history. Folder sizes are
+measured on demand, not over time.
 
 ## Listening decides who can connect
 

@@ -677,6 +677,296 @@
     resizeTimer = setTimeout(drawTreemap, 120);
   }).observe(svg.parentElement);
 
+  // Every card the timeline scopes renders from one frame, whether it came
+  // off the live stream or out of the history.
+  function renderFrame(f, stamp) {
+    if (f.vitals) {
+      renderCpu(f.vitals);
+      renderMeters(f.vitals);
+      $("#uptime").textContent = "up " + duration(f.vitals.uptime);
+      $("#foot-meta").textContent = (appVersion ? "kanshi " + appVersion + " · " : "") + stamp;
+    }
+    if (f.docker) renderContainers(f.docker);
+  }
+
+  /* ── history timeline ───────────────────────────────────────────────── */
+  // Only shown while the server keeps history (the History button in the
+  // footer, or KANSHI_HISTORY_DAYS). The chart is CPU and RAM over the chosen
+  // range; picking a moment on it re-renders the processor, memory and
+  // container cards from that record. The storage map has no history and
+  // stays live.
+  const tlSvg = $("#tl-chart");
+  // The left gutter holds the % ticks, clear of the lines: the newest data is
+  // at the right edge, where ticks would sit on top of it.
+  const TL_H = 84, TL_TOP = 6, TL_BOTTOM = 2, TL_LEFT = 34;
+  const tl = {
+    range: 3600, from: 0, to: 0, w: 0,   // w is the whole chart, gutter included
+    interval: 30, step: 30,   // seconds between points: records, or buckets when zoomed out
+    points: [],               // [t, cpu%, mem%], oldest first
+    at: null,                 // the record on screen, or null when live
+  };
+  let lastLive = null, lastLiveStamp = "", tlToken = 0;
+
+  function clock(t, withDate) {
+    const d = new Date(t * 1000);
+    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    if (!withDate) return time;
+    return d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }) + ", " + time;
+  }
+  function rangeLabel() {
+    const chip = $("#tl-range").querySelector(".is-on");
+    return chip ? chip.textContent + " ago" : "";
+  }
+
+  async function loadTimeline() {
+    const to = Math.floor(Date.now() / 1000), from = to - tl.range;
+    // About one point per pixel: finer than that is invisible.
+    const n = Math.max(60, Math.min(1000, Math.round(tlSvg.getBoundingClientRect().width) || 600));
+    let h;
+    try { h = await (await fetch("/api/history?from=" + from + "&to=" + to + "&n=" + n)).json(); } catch (e) { return; }
+    histInfo = h;
+    $("#timeline").hidden = !h.enabled;
+    if (!h.enabled) {
+      // Turned off while looking back: there is nothing left to look at.
+      if (tl.at !== null) goLive();
+      return;
+    }
+    tl.from = from; tl.to = to;
+    tl.points = h.points;
+    tl.interval = h.interval;
+    tl.step = Math.max(h.interval, tl.range / n);
+    // A range longer than anything that is kept would only be empty space.
+    $("#tl-range").querySelectorAll(".chip").forEach((c) => {
+      c.hidden = +c.dataset.range > h.retention && +c.dataset.range > 3600;
+    });
+    $("#tl-from").textContent = rangeLabel();
+    drawTimeline();
+  }
+
+  function tx(t) { return TL_LEFT + (t - tl.from) / (tl.to - tl.from) * (tl.w - TL_LEFT); }
+  function ty(pct) { return TL_TOP + (1 - Math.min(100, Math.max(0, pct)) / 100) * (TL_H - TL_TOP - TL_BOTTOM); }
+
+  // A gap longer than a couple of steps is time nothing was recorded (kanshi
+  // was not running), so the line breaks there rather than bridging it.
+  function linePath(k) {
+    let d = "", prev = null;
+    tl.points.forEach((p) => {
+      const x = tx(p[0]).toFixed(1), y = ty(p[k]).toFixed(1);
+      d += (prev === null || p[0] - prev > tl.step * 2.5 ? "M" + x + " " + y + "h0.01" : "L" + x + " " + y);
+      prev = p[0];
+    });
+    return d;
+  }
+
+  function drawTimeline() {
+    tl.w = Math.max(100, Math.round(tlSvg.getBoundingClientRect().width));
+    tlSvg.setAttribute("height", TL_H);
+    const grid = [100, 50, 0].map((v) => {
+      const y = ty(v).toFixed(1);
+      return '<line class="' + (v ? "grid" : "base") + '" x1="' + TL_LEFT + '" x2="' + tl.w + '" y1="' + y + '" y2="' + y + '"/>' +
+        '<text class="tick" x="' + (TL_LEFT - 6) + '" y="' + (+y + 3.5) + '" text-anchor="end">' + v + "%</text>";
+    }).join("");
+    tlSvg.innerHTML = grid +
+      '<path class="line mem" d="' + linePath(2) + '"/>' +
+      '<path class="line cpu" d="' + linePath(1) + '"/>' +
+      '<line class="pick" y1="0" y2="' + TL_H + '" visibility="hidden"/>' +
+      '<g class="hover" visibility="hidden"><line class="hair" y1="0" y2="' + TL_H + '"/>' +
+      '<circle class="dot-mem" r="4"/><circle class="dot-cpu" r="4"/></g>';
+    if (!tl.points.length) {
+      tlSvg.insertAdjacentHTML("beforeend", '<text class="tick" x="' + (TL_LEFT + tl.w) / 2 + '" y="' + TL_H / 2 +
+        '" text-anchor="middle">Nothing recorded in this range yet</text>');
+    }
+    drawPick();
+  }
+
+  function drawPick() {
+    const line = tlSvg.querySelector(".pick");
+    if (!line) return;
+    const show = tl.at !== null && tl.at >= tl.from && tl.at <= tl.to;
+    line.setAttribute("visibility", show ? "visible" : "hidden");
+    if (show) { const x = tx(tl.at).toFixed(1); line.setAttribute("x1", x); line.setAttribute("x2", x); }
+  }
+
+  // The crosshair finds the time: whichever point is nearest the pointer.
+  function nearestPoint(clientX) {
+    const pts = tl.points;
+    if (!pts.length) return -1;
+    const x = clientX - tlSvg.getBoundingClientRect().left;
+    const t = tl.from + (x - TL_LEFT) / (tl.w - TL_LEFT) * (tl.to - tl.from);
+    let lo = 0, hi = pts.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (pts[mid][0] < t) lo = mid + 1; else hi = mid; }
+    return lo > 0 && t - pts[lo - 1][0] < pts[lo][0] - t ? lo - 1 : lo;
+  }
+
+  function tipRow(cls, value, name) {
+    const row = document.createElement("div");
+    const key = document.createElement("i");
+    key.className = "key " + cls;
+    const b = document.createElement("b");
+    b.textContent = value.toFixed(1) + "%";
+    row.append(key, b, " " + name);
+    return row;
+  }
+
+  function showHover(i) {
+    const g = tlSvg.querySelector(".hover"), tip = $("#tl-tip");
+    if (i < 0) { g.setAttribute("visibility", "hidden"); tip.hidden = true; return; }
+    const p = tl.points[i], x = tx(p[0]);
+    g.setAttribute("visibility", "visible");
+    g.querySelector(".hair").setAttribute("x1", x);
+    g.querySelector(".hair").setAttribute("x2", x);
+    g.querySelector(".dot-cpu").setAttribute("cx", x);
+    g.querySelector(".dot-cpu").setAttribute("cy", ty(p[1]));
+    g.querySelector(".dot-mem").setAttribute("cx", x);
+    g.querySelector(".dot-mem").setAttribute("cy", ty(p[2]));
+
+    const head = document.createElement("div");
+    head.className = "t";
+    // Zoomed out, each point is the peak of a stretch of records.
+    head.textContent = clock(p[0], tl.range > 86400) + (tl.step > tl.interval * 1.5 ? " · peak" : "");
+    tip.replaceChildren(head, tipRow("key-cpu", p[1], "CPU"), tipRow("key-mem", p[2], "RAM"));
+    tip.hidden = false;
+    const w = tip.offsetWidth;
+    tip.style.left = (x < (TL_LEFT + tl.w) / 2 ? Math.min(x + 12, tl.w - w) : Math.max(0, x - 12 - w)) + "px";
+  }
+
+  tlSvg.addEventListener("pointermove", (ev) => showHover(nearestPoint(ev.clientX)));
+  tlSvg.addEventListener("pointerleave", () => showHover(-1));
+  tlSvg.addEventListener("click", (ev) => {
+    const i = nearestPoint(ev.clientX);
+    if (i >= 0) pick(tl.points[i][0], 0);
+    // An SVG is not focused by a click, and the arrow keys step from here.
+    tlSvg.focus({ preventScroll: true });
+    // A finger has no hover to leave, so the readout would stay stuck on.
+    if (ev.pointerType && ev.pointerType !== "mouse") showHover(-1);
+  });
+  tlSvg.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowLeft") step(-1);
+    else if (ev.key === "ArrowRight") step(1);
+    else if (ev.key === "Escape" || ev.key === "End") goLive();
+    else return;
+    ev.preventDefault();
+  });
+
+  // dir 0 is the record nearest t, -1 the one before it, 1 the one after.
+  async function pick(t, dir) {
+    const token = ++tlToken;
+    let r;
+    try {
+      const res = await fetch("/api/history/at?t=" + t + "&dir=" + dir);
+      if (res.status === 404) {
+        // Stepping forward past the newest record is where live begins.
+        if (token === tlToken && dir > 0) goLive();
+        return;
+      }
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      r = await res.json();
+    } catch (e) { return; }
+    if (token !== tlToken) return;
+    tl.at = r.t;
+    document.body.classList.add("is-history");
+    renderFrame(r.frame, "recorded " + clock(r.t, true));
+    renderTimelineStatus();
+    drawPick();
+  }
+
+  function step(dir) {
+    if (tl.at !== null) pick(tl.at, dir);
+    else if (dir < 0) pick(Math.floor(Date.now() / 1000) + 1, -1);   // the newest record
+  }
+
+  function goLive() {
+    tlToken++;
+    tl.at = null;
+    document.body.classList.remove("is-history");
+    if (lastLive) renderFrame(lastLive, lastLiveStamp);
+    renderTimelineStatus();
+    drawPick();
+  }
+
+  function renderTimelineStatus() {
+    const live = tl.at === null;
+    $("#tl-status").textContent = live
+      ? "Live. " + (matchMedia("(pointer: fine)").matches ? "Click" : "Tap") + " the chart to see an earlier moment."
+      : "Showing " + clock(tl.at, true) + ", " + ago(tl.at) + ". The storage map stays live.";
+    $("#tl-live").hidden = live;
+    $("#tl-next").disabled = live;
+  }
+
+  $("#tl-prev").addEventListener("click", () => step(-1));
+  $("#tl-next").addEventListener("click", () => step(1));
+  $("#tl-live").addEventListener("click", goLive);
+  $("#tl-range").addEventListener("click", (ev) => {
+    const chip = ev.target.closest(".chip");
+    if (!chip) return;
+    $("#tl-range").querySelectorAll(".chip").forEach((c) => c.classList.toggle("is-on", c === chip));
+    tl.range = +chip.dataset.range;
+    loadTimeline();
+  });
+
+  let tlResize;
+  new ResizeObserver(() => {
+    clearTimeout(tlResize);
+    tlResize = setTimeout(() => { if (!$("#timeline").hidden) drawTimeline(); }, 120);
+  }).observe($("#tl-wrap"));
+
+  // The chart moves on as records arrive. Nothing to fetch in a hidden tab.
+  setInterval(() => {
+    if (!document.hidden && !$("#timeline").hidden) loadTimeline();
+  }, 30000);
+  renderTimelineStatus();
+
+  /* ── history setting ────────────────────────────────────────────────── */
+  // Whether kanshi keeps history at all. Like the network setting, the server
+  // decides whether this page may change it (only from this computer, and only
+  // when the environment does not pin it); the dialog shows what it was told.
+  let histInfo = null;
+  const histDlg = $("#hist-dlg");
+  const DAY_CHOICES = [1, 7, 30];
+
+  function renderHistoryDialog() {
+    const st = histInfo;
+    $("#hist-on").checked = st.enabled;
+    // A value set by hand in kanshi.env is offered as it is, not rounded.
+    const choices = DAY_CHOICES.indexOf(st.days) >= 0 ? DAY_CHOICES : DAY_CHOICES.concat([st.days]).sort((a, b) => a - b);
+    $("#hist-days").innerHTML = choices.map((d) =>
+      '<option value="' + d + '"' + (d === st.days ? " selected" : "") + ">" + plural(d, "day") + "</option>").join("");
+    $("#hist-days").disabled = !st.enabled;
+    $("#hist-cost").textContent = "While it is on, kanshi takes a reading every " + st.every +
+      " s around the clock instead of resting when no page is open, and keeps a few MB a day on disk.";
+    $("#hist-opts").disabled = !st.editable;
+    $("#hist-save").hidden = !st.editable;
+    $("#hist-reason").textContent = st.editable ? "" : st.reason || "";
+  }
+  $("#hist-on").addEventListener("change", () => { $("#hist-days").disabled = !$("#hist-on").checked; });
+
+  $("#hist-open").addEventListener("click", async () => {
+    $("#hist-err").textContent = "";
+    await loadTimeline();
+    if (!histInfo) return;
+    renderHistoryDialog();
+    histDlg.showModal();
+  });
+
+  $("#hist-save").addEventListener("click", async () => {
+    const days = $("#hist-on").checked ? +$("#hist-days").value : 0;
+    $("#hist-err").textContent = "";
+    try {
+      const res = await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Kanshi": "1" },
+        body: JSON.stringify({ days: days }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim() || "HTTP " + res.status);
+      histInfo = await res.json();
+      renderHistoryDialog();
+      if (histInfo.reason) $("#hist-err").textContent = histInfo.reason;
+      loadTimeline();
+    } catch (err) {
+      $("#hist-err").textContent = "Could not change it: " + err.message;
+    }
+  });
+
   /* ── live stream ────────────────────────────────────────────────────── */
   let source = null, retry = 1000, retryTimer = null;
   function setConn(state, text) {
@@ -700,14 +990,13 @@
       let payload;
       try { payload = JSON.parse(ev.data); } catch (e) { return; }
       setConn("live", "live");
-      if (payload.vitals) {
-        renderCpu(payload.vitals);
-        renderMeters(payload.vitals);
-        $("#uptime").textContent = "up " + duration(payload.vitals.uptime);
-        $("#foot-meta").textContent = (appVersion ? "kanshi " + appVersion + " · " : "") +
-          "updated " + new Date().toLocaleTimeString();
+      if (payload.vitals || payload.docker) {
+        lastLive = payload;
+        lastLiveStamp = "updated " + new Date().toLocaleTimeString();
+        // Looking back holds the page on the picked moment; the stream keeps
+        // running underneath so going back to live is instant.
+        if (tl.at === null) renderFrame(payload, lastLiveStamp);
       }
-      if (payload.docker) renderContainers(payload.docker);
       if (payload.storage) onScanStatus(payload.storage);
     };
     source.onerror = () => {
@@ -726,6 +1015,7 @@
     if (document.hidden) { disconnect(); setConn("down", "paused"); return; }
     connect();
     loadStorage();
+    loadTimeline();
   });
 
   /* ── network access ─────────────────────────────────────────────────── */
@@ -832,4 +1122,5 @@
 
   connect();
   loadStorage();
+  loadTimeline();
 })();
