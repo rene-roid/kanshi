@@ -348,6 +348,13 @@ tr.is-stopped { opacity: .55; }
 .dlg .links a { color: var(--series-1); overflow-wrap: anywhere; }
 .dlg .links .k { display: inline-block; min-width: 96px; margin-right: 8px; color: var(--text-muted); }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+/* A setting that belongs to the checkbox above it, indented to its text. */
+.dlg .dlg-row { align-items: center; gap: 8px; padding-left: 26px; color: var(--text-secondary); cursor: default; }
+.dlg select {
+  font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary);
+}
+.dlg select:disabled { opacity: .5; }
 .btn-primary { background: var(--series-1); border-color: transparent; color: #fff; }
 .err { margin: 0; color: var(--status-critical); }
 .err:empty { display: none; }

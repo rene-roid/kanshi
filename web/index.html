@@ -148,6 +148,7 @@
   <footer class="foot muted small">
     <span id="foot-meta">—</span>
     <span class="foot-actions">
+      <button id="hist-open" class="btn btn-quiet" type="button" aria-haspopup="dialog">History</button>
       <button id="access-open" class="btn btn-quiet" type="button" aria-haspopup="dialog">Network</button>
       <button id="theme" class="btn btn-quiet" type="button" aria-label="Toggle colour theme">Theme</button>
     </span>
@@ -172,6 +173,25 @@
     <div class="dlg-actions">
       <button class="btn btn-quiet" value="close" type="submit">Close</button>
       <button id="access-save" class="btn btn-primary" type="button">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="hist-dlg" class="dlg" aria-labelledby="hist-h">
+  <form method="dialog">
+    <h2 id="hist-h">Keep a history</h2>
+    <p class="muted small">Record CPU, memory and containers, so the page can scroll back to what happened while nobody was looking.</p>
+    <fieldset id="hist-opts">
+      <legend class="visually-hidden">History</legend>
+      <label><input type="checkbox" id="hist-on"><span><b>Keep history</b><span class="muted small" id="hist-cost"></span></span></label>
+      <label class="dlg-row" for="hist-days">Keep the last <select id="hist-days"></select></label>
+    </fieldset>
+    <p class="muted small">Turning it off stops recording and keeps what was already recorded.</p>
+    <p id="hist-reason" class="muted small"></p>
+    <p id="hist-err" class="err small" role="alert"></p>
+    <div class="dlg-actions">
+      <button class="btn btn-quiet" value="close" type="submit">Close</button>
+      <button id="hist-save" class="btn btn-primary" type="button">Save</button>
     </div>
   </form>
 </dialog>

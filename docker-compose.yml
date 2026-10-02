@@ -39,9 +39,10 @@ services:
       KANSHI_STORAGE_CPU: "${KANSHI_STORAGE_CPU:-10}"
       KANSHI_TREE_DEPTH: "${KANSHI_TREE_DEPTH:-4}"
 
-      # Days of stats to keep for the history timeline. 0 keeps none and lets
-      # kanshi go fully idle when nobody is looking.
-      KANSHI_HISTORY_DAYS: "${KANSHI_HISTORY_DAYS:-0}"
+      # Days of stats to keep for the history timeline. Empty means off, which
+      # lets kanshi go fully idle when nobody is looking. Any value here,
+      # 0 included, also locks the dashboard's History switch.
+      KANSHI_HISTORY_DAYS: "${KANSHI_HISTORY_DAYS:-}"
       KANSHI_HISTORY_INTERVAL: "${KANSHI_HISTORY_INTERVAL:-30}"
 
       # Give the GC a budget below mem_limit so a walk on an unusually large

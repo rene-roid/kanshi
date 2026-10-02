@@ -690,10 +690,11 @@
   }
 
   /* ── history timeline ───────────────────────────────────────────────── */
-  // Only shown when the server keeps history (KANSHI_HISTORY_DAYS). The chart
-  // is CPU and RAM over the chosen range; picking a moment on it re-renders
-  // the processor, memory and container cards from that record. The storage
-  // map has no history and stays live.
+  // Only shown while the server keeps history (the History button in the
+  // footer, or KANSHI_HISTORY_DAYS). The chart is CPU and RAM over the chosen
+  // range; picking a moment on it re-renders the processor, memory and
+  // container cards from that record. The storage map has no history and
+  // stays live.
   const tlSvg = $("#tl-chart");
   // The left gutter holds the % ticks, clear of the lines: the newest data is
   // at the right edge, where ticks would sit on top of it.
@@ -723,8 +724,13 @@
     const n = Math.max(60, Math.min(1000, Math.round(tlSvg.getBoundingClientRect().width) || 600));
     let h;
     try { h = await (await fetch("/api/history?from=" + from + "&to=" + to + "&n=" + n)).json(); } catch (e) { return; }
+    histInfo = h;
     $("#timeline").hidden = !h.enabled;
-    if (!h.enabled) return;
+    if (!h.enabled) {
+      // Turned off while looking back: there is nothing left to look at.
+      if (tl.at !== null) goLive();
+      return;
+    }
     tl.from = from; tl.to = to;
     tl.points = h.points;
     tl.interval = h.interval;
@@ -909,6 +915,57 @@
     if (!document.hidden && !$("#timeline").hidden) loadTimeline();
   }, 30000);
   renderTimelineStatus();
+
+  /* ── history setting ────────────────────────────────────────────────── */
+  // Whether kanshi keeps history at all. Like the network setting, the server
+  // decides whether this page may change it (only from this computer, and only
+  // when the environment does not pin it); the dialog shows what it was told.
+  let histInfo = null;
+  const histDlg = $("#hist-dlg");
+  const DAY_CHOICES = [1, 7, 30];
+
+  function renderHistoryDialog() {
+    const st = histInfo;
+    $("#hist-on").checked = st.enabled;
+    // A value set by hand in kanshi.env is offered as it is, not rounded.
+    const choices = DAY_CHOICES.indexOf(st.days) >= 0 ? DAY_CHOICES : DAY_CHOICES.concat([st.days]).sort((a, b) => a - b);
+    $("#hist-days").innerHTML = choices.map((d) =>
+      '<option value="' + d + '"' + (d === st.days ? " selected" : "") + ">" + plural(d, "day") + "</option>").join("");
+    $("#hist-days").disabled = !st.enabled;
+    $("#hist-cost").textContent = "While it is on, kanshi takes a reading every " + st.every +
+      " s around the clock instead of resting when no page is open, and keeps a few MB a day on disk.";
+    $("#hist-opts").disabled = !st.editable;
+    $("#hist-save").hidden = !st.editable;
+    $("#hist-reason").textContent = st.editable ? "" : st.reason || "";
+  }
+  $("#hist-on").addEventListener("change", () => { $("#hist-days").disabled = !$("#hist-on").checked; });
+
+  $("#hist-open").addEventListener("click", async () => {
+    $("#hist-err").textContent = "";
+    await loadTimeline();
+    if (!histInfo) return;
+    renderHistoryDialog();
+    histDlg.showModal();
+  });
+
+  $("#hist-save").addEventListener("click", async () => {
+    const days = $("#hist-on").checked ? +$("#hist-days").value : 0;
+    $("#hist-err").textContent = "";
+    try {
+      const res = await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Kanshi": "1" },
+        body: JSON.stringify({ days: days }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim() || "HTTP " + res.status);
+      histInfo = await res.json();
+      renderHistoryDialog();
+      if (histInfo.reason) $("#hist-err").textContent = histInfo.reason;
+      loadTimeline();
+    } catch (err) {
+      $("#hist-err").textContent = "Could not change it: " + err.message;
+    }
+  });
 
   /* ── live stream ────────────────────────────────────────────────────── */
   let source = null, retry = 1000, retryTimer = null;

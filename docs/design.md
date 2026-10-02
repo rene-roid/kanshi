@@ -54,10 +54,13 @@ cannot be written, kanshi logs it and keeps sizes in memory instead.
 
 ## History is a line per record, in hourly files
 
-With `KANSHI_HISTORY_DAYS` set, kanshi records what the processor, memory and container cards show every
+With history on, kanshi records what the processor, memory and container cards show every
 `KANSHI_HISTORY_INTERVAL` (30 s), and the page grows a timeline to scroll back through them. This is the one
 feature that breaks the rule above: recording has to sample whether or not anyone is watching, so it is off by
-default. While a browser keeps the poller busy, a record reuses its latest frame. Once the poller is idle, the
+default. It is turned on from the dashboard's History button, or with `KANSHI_HISTORY_DAYS`. The button follows
+the same rules as the network setting below: only from this computer, and not when the environment sets it.
+Turning it off stops the recorder and keeps what was recorded; turning it back on picks it up again, minus
+whatever has aged out. While a browser keeps the poller busy, a record reuses its latest frame. Once the poller is idle, the
 recorder samples on its own; every rate is a delta against the previous sample, so an idle-time record averages
 its whole interval.
 

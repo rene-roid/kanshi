@@ -45,7 +45,6 @@ type Server struct {
 	vitals  *vitals.Reader
 	docker  *dockerstats.Client
 	storage *storage.Scanner
-	history *history.Store // nil unless KANSHI_HISTORY_DAYS is set
 	assets  *assets
 
 	// base outlives any single request. Work that mutates shared state, such
@@ -72,6 +71,15 @@ type Server struct {
 	saveOnce     sync.Once
 	saveOK       bool
 
+	// History can be turned on and off from the page, so the store is only
+	// reached through historyStore. It is nil while history is off; days is
+	// what is kept while it is on, and what the page offers while it is off.
+	historyMu   sync.Mutex
+	history     *history.Store
+	historyStop func() // stops the recorder and waits for it
+	historyDays float64
+	historySrc  config.Source
+
 	// OnReady, when set, runs once the dashboard is listening.
 	OnReady func()
 }
@@ -82,19 +90,6 @@ func New(cfg config.Config, web fs.FS, version string, logf func(string, ...any)
 		return nil, err
 	}
 	r := roots.NewResolver(cfg.StorageRoots, cfg.HostRoot)
-	// History is an extra, so a folder that cannot be written costs the
-	// timeline, not the dashboard.
-	var h *history.Store
-	switch {
-	case cfg.HistoryRetention <= 0:
-	case cfg.HistoryDir == "":
-		logf("history is off: no folder to keep it in; set KANSHI_HISTORY_DIR")
-	default:
-		if h, err = history.Open(cfg.HistoryDir, cfg.HistoryRetention, logf); err != nil {
-			logf("history is off: %v", err)
-			h = nil
-		}
-	}
 	return &Server{
 		base:         context.Background(),
 		cfg:          cfg,
@@ -104,7 +99,8 @@ func New(cfg config.Config, web fs.FS, version string, logf func(string, ...any)
 		vitals:       vitals.New(r),
 		docker:       dockerstats.New(cfg),
 		storage:      storage.New(cfg, r, logf),
-		history:      h,
+		historyDays:  defaultHistoryDays(cfg),
+		historySrc:   cfg.HistorySource,
 		assets:       a,
 		subs:         make(map[chan []byte]struct{}),
 		wake:         make(chan struct{}, 1),
@@ -254,128 +250,6 @@ func (s *Server) broadcast(payload []byte) {
 	}
 }
 
-/* ── history ────────────────────────────────────────────────────────────── */
-
-// record writes one history entry every HistoryInterval, watched or not. While
-// a browser keeps the poller busy it reuses the poller's latest frame; once
-// the poller has gone idle it samples on its own. Every rate is a delta
-// against the previous sample, so an idle-time record averages the whole
-// interval rather than the last five seconds.
-func (s *Server) record(ctx context.Context) {
-	if s.history == nil {
-		return
-	}
-	defer s.history.Close()
-	tick := time.NewTicker(s.cfg.HistoryInterval)
-	defer tick.Stop()
-	var prev time.Time
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-		s.mu.RLock()
-		frame, at := s.latest, s.latestAt
-		s.mu.RUnlock()
-		if s.idle() || frame.Vitals == nil {
-			frame = s.sampleOnce(ctx)
-			if ctx.Err() != nil {
-				return
-			}
-			at = time.Now()
-		} else if !at.After(prev) {
-			// The poller has not ticked since the last record, which only
-			// happens when records are more frequent than polls.
-			continue
-		}
-		prev = at
-		if err := s.history.Add(at, frame.Vitals.CPU.Percent, frame.Vitals.Memory.Percent, historyFrame(frame)); err != nil {
-			s.logf("history: %v", err)
-		}
-	}
-}
-
-// historyFrame is what a record keeps: the vitals and containers, without
-// the parts a look back has no use for. Port mappings are most of a
-// container's bytes and a link into the past opens the present anyway.
-func historyFrame(f Frame) []byte {
-	out := struct {
-		Vitals *vitals.Sample      `json:"vitals"`
-		Docker *dockerstats.Result `json:"docker"`
-	}{Vitals: f.Vitals}
-	if f.Docker != nil {
-		d := *f.Docker
-		d.Containers = make([]dockerstats.Container, len(f.Docker.Containers))
-		for i, c := range f.Docker.Containers {
-			c.Ports, c.Blkio, c.Image = nil, nil, ""
-			d.Containers[i] = c
-		}
-		out.Docker = &d
-	}
-	b, _ := json.Marshal(out)
-	return b
-}
-
-// handleHistory is the timeline: /api/history?from=…&to=…&n=… in Unix
-// seconds, at most n points (default 600) with the busiest kept per bucket.
-func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
-	if s.history == nil {
-		writeJSON(w, r, map[string]bool{"enabled": false})
-		return
-	}
-	q := r.URL.Query()
-	now := time.Now().Unix()
-	to := queryInt(q.Get("to"), now)
-	from := queryInt(q.Get("from"), to-3600)
-	n := int(min(max(queryInt(q.Get("n"), 600), 10), 2000))
-	first, last := s.history.Span()
-	points := s.history.Series(from, to, n)
-	if points == nil {
-		points = []history.Point{}
-	}
-	// While the poller runs, records are its frames, so they come no closer
-	// together than a poll. The page reads a longer wait than this as a gap.
-	writeJSON(w, r, map[string]any{
-		"enabled":   true,
-		"interval":  max(s.cfg.HistoryInterval, s.cfg.PollInterval).Seconds(),
-		"retention": s.cfg.HistoryRetention.Seconds(),
-		"first":     first,
-		"last":      last,
-		"points":    points,
-	})
-}
-
-// handleHistoryAt returns one recorded frame: /api/history/at?t=…&dir=…,
-// where dir is 0 for the record nearest t, -1 for the one before and 1 for
-// the one after.
-func (s *Server) handleHistoryAt(w http.ResponseWriter, r *http.Request) {
-	if s.history == nil {
-		http.Error(w, "history is off", http.StatusNotFound)
-		return
-	}
-	q := r.URL.Query()
-	t, err := strconv.ParseInt(q.Get("t"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad t", http.StatusBadRequest)
-		return
-	}
-	p, frame, ok := s.history.At(t, int(queryInt(q.Get("dir"), 0)))
-	if !ok {
-		http.Error(w, "nothing recorded there", http.StatusNotFound)
-		return
-	}
-	writeJSON(w, r, map[string]any{"t": p.T, "frame": frame})
-}
-
-func queryInt(v string, def int64) int64 {
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
-		return def
-	}
-	return n
-}
-
 /* ── handlers ───────────────────────────────────────────────────────────── */
 
 func (s *Server) Handler() http.Handler {
@@ -390,6 +264,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/access", s.handleSetAccess)
 	mux.HandleFunc("GET /api/stream", s.handleStream)
 	mux.HandleFunc("GET /api/history", s.handleHistory)
+	mux.HandleFunc("POST /api/history", s.handleSetHistory)
 	mux.HandleFunc("GET /api/history/at", s.handleHistoryAt)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /static/", s.assets.serveStatic)
@@ -629,10 +504,19 @@ func (s *Server) Run(ctx context.Context, mode access.Mode) error {
 		go s.OnReady()
 	}
 
+	if s.cfg.HistoryRetention > 0 {
+		s.historyMu.Lock()
+		if err := s.startHistory(s.historyDays); err != nil {
+			// History is an extra, so a folder that cannot be written costs
+			// the timeline, not the dashboard.
+			s.logf("history is off: %v", err)
+		}
+		s.historyMu.Unlock()
+	}
+
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(3)
 	go func() { defer wg.Done(); s.Poll(ctx) }()
-	go func() { defer wg.Done(); s.record(ctx) }()
 	go func() { defer wg.Done(); s.storage.Loop(ctx) }()
 	go func() { defer wg.Done(); mgr.Watch(ctx) }()
 
@@ -644,6 +528,9 @@ func (s *Server) Run(ctx context.Context, mode access.Mode) error {
 	mgr.Close()
 	s.docker.Close()
 	wg.Wait()
+	s.historyMu.Lock()
+	s.stopHistory()
+	s.historyMu.Unlock()
 	s.storage.Close()
 	return nil
 }

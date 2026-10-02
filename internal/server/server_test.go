@@ -255,7 +255,9 @@ func TestHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer h.Close()
+	s.historyMu.Lock()
 	s.history = h
+	s.historyMu.Unlock()
 	now := time.Now()
 	for i := range 3 {
 		v := vitals.Sample{CPU: vitals.CPU{Percent: float64(10 * i)}}
@@ -295,5 +297,75 @@ func TestHistory(t *testing.T) {
 	}
 	if c := at.Frame.Docker.Containers; len(c) != 1 || c[0].Name != "web" || c[0].Ports != nil {
 		t.Errorf("recorded containers = %+v, want web without its ports", c)
+	}
+}
+
+func TestHistoryToggleIsLocalOnly(t *testing.T) {
+	s := newServer(t)
+	s.cfg.HistoryDir = t.TempDir()
+	s.cfg.HistoryInterval = time.Hour
+	defer func() { s.historyMu.Lock(); s.stopHistory(); s.historyMu.Unlock() }()
+	post := func(body string, edit func(*http.Request)) *httptest.ResponseRecorder {
+		return do(s, "POST", "/api/history", func(r *http.Request) {
+			r.Header.Set("X-Kanshi", "1")
+			r.Body = ioNopCloser(body)
+			if edit != nil {
+				edit(r)
+			}
+		})
+	}
+	state := func(w *httptest.ResponseRecorder) historyState {
+		var st historyState
+		if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil {
+			t.Fatalf("%v: %s", err, w.Body)
+		}
+		return st
+	}
+
+	off := state(do(s, "GET", "/api/history", nil))
+	if off.Enabled || !off.Editable || off.Days != historyDefaultDays {
+		t.Errorf("before turning it on: %+v", off)
+	}
+	lan := state(do(s, "GET", "/api/history", func(r *http.Request) { r.RemoteAddr = "192.168.1.20:4000"; r.Host = "192.168.1.5:8100" }))
+	if lan.Editable || lan.Reason == "" {
+		t.Errorf("seen from the LAN the setting must be read-only: %+v", lan)
+	}
+	if w := post(`{"days":7}`, func(r *http.Request) { r.RemoteAddr = "192.168.1.20:4000" }); w.Code != http.StatusForbidden {
+		t.Errorf("from the LAN = %d", w.Code)
+	}
+	if w := post(`{"days":7}`, func(r *http.Request) { r.Header.Del("X-Kanshi") }); w.Code != http.StatusForbidden {
+		t.Errorf("without the header = %d", w.Code)
+	}
+	if w := post(`{"days":-1}`, nil); w.Code != http.StatusBadRequest {
+		t.Errorf("negative days = %d", w.Code)
+	}
+
+	w := post(`{"days":7}`, nil)
+	if st := state(w); w.Code != http.StatusOK || !st.Enabled || st.Days != 7 {
+		t.Fatalf("turning it on = %d %+v", w.Code, st)
+	}
+	if s.historyStore() == nil {
+		t.Fatal("no store after turning history on")
+	}
+	if st := state(do(s, "GET", "/api/history", nil)); !st.Enabled || st.Points == nil {
+		t.Errorf("timeline while on: %+v", st)
+	}
+	saved, _ := os.ReadFile(s.cfg.File)
+	if !strings.Contains(string(saved), "KANSHI_HISTORY_DAYS=7") {
+		t.Errorf("not persisted: %q", saved)
+	}
+
+	w = post(`{"days":0}`, nil)
+	if st := state(w); w.Code != http.StatusOK || st.Enabled || s.historyStore() != nil {
+		t.Fatalf("turning it off = %d %+v", w.Code, st)
+	}
+	saved, _ = os.ReadFile(s.cfg.File)
+	if !strings.Contains(string(saved), "KANSHI_HISTORY_DAYS=0") {
+		t.Errorf("not persisted: %q", saved)
+	}
+
+	s.historySrc = config.SourceEnv
+	if w := post(`{"days":7}`, nil); w.Code != http.StatusConflict {
+		t.Errorf("pinned by the environment = %d", w.Code)
 	}
 }
