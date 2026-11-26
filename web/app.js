@@ -119,6 +119,7 @@
   let sortKey = "cpu";
   let lastDocker = null;
   const EMPTY_TEXT = $("#ctr-empty").textContent;
+  let hostMem = 0;
 
   function netTotal(c) { return c.net ? c.net.rx_rate + c.net.tx_rate : -1; }
 
@@ -230,7 +231,15 @@
     // A stats call that failed leaves zeros, which would read as an idle container.
     const live = running && !c.no_stats;
     setText(row.cpu, live ? c.cpu.toFixed(1) + "%" : "—");
-    setText(row.mem, live ? bytes(c.mem_used) : "—");
+    // Docker reports the host's memory as the limit when none is set, so only
+    // a smaller one is a real cap worth showing.
+    const capped = live && c.mem_limit > 0 && c.mem_limit < hostMem;
+    // The line break folds to a space except on a phone, where it stacks.
+    setText(row.mem, live ? bytes(c.mem_used) + (capped ? "\n" + c.mem_percent.toFixed(0) + "%" : "") : "—");
+    const memCls = capped ? "num lim " + severity(c.mem_percent, 80, 92) : "num";
+    if (row.mem.className !== memCls) row.mem.className = memCls;
+    const memTitle = capped ? "of a " + bytes(c.mem_limit) + " limit" : "";
+    if (row.mem.title !== memTitle) row.mem.title = memTitle;
     setText(row.net, !live ? "—" : c.net ? "↓" + shortRate(c.net.rx_rate) + " ↑" + shortRate(c.net.tx_rate) : "shared");
     const cls = running ? "" : "is-stopped";
     if (row.tr.className !== cls) row.tr.className = cls;
@@ -707,6 +716,7 @@
   // off the live stream or out of the history.
   function renderFrame(f, stamp) {
     if (f.vitals) {
+      hostMem = f.vitals.memory.total;
       renderCpu(f.vitals);
       renderMeters(f.vitals);
       $("#uptime").textContent = "up " + duration(f.vitals.uptime);
