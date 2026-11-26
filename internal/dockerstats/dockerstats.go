@@ -20,6 +20,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -179,6 +180,9 @@ type Container struct {
 	Status     string  `json:"status"`
 	Health     *string `json:"health"`
 	Created    int64   `json:"created"`
+	// NoStats marks a running container whose stats call failed or timed
+	// out: it is listed, but its figures are unknown rather than zero.
+	NoStats    bool    `json:"no_stats,omitempty"`
 	CPU        float64 `json:"cpu"`
 	MemUsed    uint64  `json:"mem_used"`
 	MemLimit   uint64  `json:"mem_limit"`
@@ -427,32 +431,29 @@ func isWildcard(ip string) bool {
 
 /* ── sampling ───────────────────────────────────────────────────────────── */
 
-func (c *Client) one(ctx context.Context, meta containerMeta) *Container {
+// listed is a container as the listing describes it, before any stats.
+func listed(meta containerMeta) Container {
+	full, name, project := identify(meta)
+	return Container{
+		ID: shortID(meta.ID), Name: name, FullName: full, Project: project,
+		Image: meta.Image, State: meta.State, Status: meta.Status,
+		Health: health(meta.Status), Created: meta.Created, Ports: ports(meta),
+	}
+}
+
+func (c *Client) one(ctx context.Context, meta containerMeta) Container {
+	out := listed(meta)
 	var s statsJSON
 	if err := c.get(ctx, "/containers/"+meta.ID+"/stats?stream=false&one-shot=true", &s); err != nil {
-		return nil
+		out.NoStats = true
+		return out
 	}
 	used, limit := memory(&s)
-	full, name, project := identify(meta)
-
-	out := &Container{
-		ID:       shortID(meta.ID),
-		Name:     name,
-		FullName: full,
-		Project:  project,
-		Image:    meta.Image,
-		State:    meta.State,
-		Status:   meta.Status,
-		Health:   health(meta.Status),
-		Created:  meta.Created,
-		CPU:      c.cpuPercent(meta.ID, &s),
-		MemUsed:  used,
-		MemLimit: limit,
-		PIDs:     s.PidsStats.Current,
-		Net:      c.network(meta.ID, &s, time.Now()),
-		Blkio:    blockIO(&s),
-		Ports:    ports(meta),
-	}
+	out.CPU = c.cpuPercent(meta.ID, &s)
+	out.MemUsed, out.MemLimit = used, limit
+	out.PIDs = s.PidsStats.Current
+	out.Net = c.network(meta.ID, &s, time.Now())
+	out.Blkio = blockIO(&s)
 	if limit > 0 {
 		out.MemPercent = math.Round(float64(used)/float64(limit)*100*100) / 100
 	}
@@ -472,9 +473,11 @@ func (c *Client) Sample(ctx context.Context) Result {
 
 	var listing []containerMeta
 	if err := c.get(ctx, "/containers/json?all=true", &listing); err != nil {
-		r := Result{Error: errString(err), Containers: []Container{}}
+		r := Result{Error: describe(err, c.cfg.DockerHost), Containers: []Container{}}
 		if absent(err) {
-			r.Unavailable = true
+			// Without permission the daemon is there but unusable, which
+			// the page must say rather than "not found".
+			r.Unavailable = !errors.Is(err, os.ErrPermission)
 			c.mu.Lock()
 			c.absent, c.absentUntil = r, time.Now().Add(retryAbsent)
 			c.mu.Unlock()
@@ -489,7 +492,7 @@ func (c *Client) Sample(ctx context.Context) Result {
 		}
 	}
 
-	results := make([]*Container, len(running))
+	containers := make([]Container, len(running), len(listing))
 	sem := make(chan struct{}, max(1, c.cfg.DockerConcurrency))
 	var wg sync.WaitGroup
 	for i, meta := range running {
@@ -498,17 +501,10 @@ func (c *Client) Sample(ctx context.Context) Result {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = c.one(ctx, meta)
+			containers[i] = c.one(ctx, meta)
 		}(i, meta)
 	}
 	wg.Wait()
-
-	containers := make([]Container, 0, len(listing))
-	for _, r := range results {
-		if r != nil {
-			containers = append(containers, *r)
-		}
-	}
 
 	// Keep stopped containers visible but without stats, so a crashed service
 	// is obvious at a glance rather than silently missing from the list.
@@ -516,12 +512,7 @@ func (c *Client) Sample(ctx context.Context) Result {
 		if meta.State == "running" {
 			continue
 		}
-		full, name, project := identify(meta)
-		containers = append(containers, Container{
-			ID: shortID(meta.ID), Name: name, FullName: full, Project: project,
-			Image: meta.Image, State: meta.State, Status: meta.Status,
-			Created: meta.Created, Ports: ports(meta),
-		})
+		containers = append(containers, listed(meta))
 	}
 
 	c.forgetStopped(running)
@@ -619,8 +610,14 @@ func absent(err error) bool {
 	return errors.As(err, &op) && op.Op == "dial"
 }
 
-// errString keeps the "Type: message" shape the dashboard already renders for
-// Docker failures.
-func errString(err error) string {
-	return fmt.Sprintf("%T: %v", err, err)
+// describe turns a failed listing into what the dashboard shows in place of
+// the containers.
+func describe(err error, host string) string {
+	switch {
+	case errors.Is(err, os.ErrPermission):
+		return "No permission to use Docker at " + host + ". Add the user kanshi runs as to the docker group, then restart kanshi."
+	case errors.Is(err, context.DeadlineExceeded):
+		return "Docker did not answer in time."
+	}
+	return fmt.Sprintf("Docker failed: %v", err)
 }

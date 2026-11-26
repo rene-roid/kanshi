@@ -128,7 +128,7 @@ func (s *Server) sampleOnce(ctx context.Context) Frame {
 		defer wg.Done()
 		host = s.vitals.Sample()
 	}()
-	containers = s.docker.Sample(ctx)
+	containers = s.sampleDocker(ctx)
 	wg.Wait()
 
 	scan := s.storage.Status()
@@ -143,6 +143,15 @@ func (s *Server) sampleOnce(ctx context.Context) Frame {
 	return frame
 }
 
+// sampleDocker bounds one Docker pass, so a daemon that accepts connections
+// and then hangs costs the page its container list for a tick, not its CPU
+// and memory numbers too.
+func (s *Server) sampleDocker(ctx context.Context) dockerstats.Result {
+	ctx, cancel := context.WithTimeout(ctx, max(s.cfg.PollInterval, 5*time.Second))
+	defer cancel()
+	return s.docker.Sample(ctx)
+}
+
 // seed fills the delta baselines so the first frame shows real numbers.
 //
 // Both CPU readings are differences against a previous sample, so a cold poller
@@ -150,7 +159,7 @@ func (s *Server) sampleOnce(ctx context.Context) Frame {
 // gap costs ~1s and makes the first frame the user sees correct.
 func (s *Server) seed(ctx context.Context) {
 	s.vitals.Prime()
-	s.docker.Sample(ctx)
+	s.sampleDocker(ctx)
 	select {
 	case <-ctx.Done():
 		return
@@ -394,12 +403,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-
 	ch := make(chan []byte, 1)
 	s.mu.Lock()
 	s.subs[ch] = struct{}{}
@@ -432,15 +435,22 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	// Byte slices, so a frame goes out as is rather than being copied into a
-	// string for every subscriber on every tick.
-	send := func(chunks ...[]byte) {
+	// string for every subscriber on every tick. A write that fails or stalls
+	// ends the stream, so a vanished browser stops counting as a viewer.
+	rc := http.NewResponseController(w)
+	send := func(chunks ...[]byte) error {
+		_ = rc.SetWriteDeadline(time.Now().Add(streamWriteTimeout))
 		for _, c := range chunks {
-			_, _ = out.Write(c)
+			if _, err := out.Write(c); err != nil {
+				return err
+			}
 		}
 		if gz != nil {
-			_ = gz.Flush()
+			if err := gz.Flush(); err != nil {
+				return err
+			}
 		}
-		flusher.Flush()
+		return rc.Flush()
 	}
 
 	// Hand the newcomer the last frame immediately, so a reconnecting phone
@@ -448,10 +458,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	payload := s.payload
 	s.mu.RUnlock()
+	var err error
 	if payload != nil {
-		send(sseData, payload, sseEnd)
+		err = send(sseData, payload, sseEnd)
 	} else {
-		send(sseHello) // gets the headers and the gzip header out now
+		err = send(sseHello) // gets the headers and the gzip header out now
+	}
+	if err != nil {
+		return
 	}
 
 	keepalive := time.NewTicker(25 * time.Second)
@@ -466,14 +480,22 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			// would sit out the full Shutdown grace period waiting on it.
 			return
 		case payload := <-ch:
+			if send(sseData, payload, sseEnd) != nil {
+				return
+			}
 			s.touch()
-			send(sseData, payload, sseEnd)
 		case <-keepalive.C:
 			// Keeps mobile proxies from closing an idle stream.
-			send(sseKeepalive)
+			if send(sseKeepalive) != nil {
+				return
+			}
 		}
 	}
 }
+
+// streamWriteTimeout is how long one frame may take to leave. A browser that
+// cannot take a few kilobytes in this long is gone or hopelessly behind.
+const streamWriteTimeout = 15 * time.Second
 
 var (
 	sseData      = []byte("data: ")
