@@ -139,7 +139,8 @@ func listen(addr netip.Addr, port int) (net.Listener, error) {
 		// tcp6 sets IPV6_V6ONLY, so "::" does not also try to take 0.0.0.0.
 		network = "tcp6"
 	}
-	return net.Listen(network, net.JoinHostPort(addr.String(), strconv.Itoa(port)))
+	lc := net.ListenConfig{Control: control}
+	return lc.Listen(context.Background(), network, net.JoinHostPort(addr.String(), strconv.Itoa(port)))
 }
 
 // Watch re-applies the current mode as interfaces come and go, and retries
