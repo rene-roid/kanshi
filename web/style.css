@@ -322,6 +322,9 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
 .dot.run { background: var(--status-good); } .dot.stop { background: var(--text-muted); }
 .dot.bad { background: var(--status-critical); }
 tr.is-stopped { opacity: .55; }
+/* Memory against the container's own limit: near it, the figure gets weight. */
+.ctr-tbl .lim.warn, .ctr-tbl .lim.crit { font-weight: 650; color: var(--text-primary); }
+@media (max-width: 559px) { .ctr-tbl .lim { white-space: pre-line; } }
 
 .foot { display: flex; justify-content: space-between; align-items: center; padding: 0 4px; }
 .foot-actions { display: flex; gap: 2px; }
