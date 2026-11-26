@@ -10,6 +10,11 @@ After `KANSHI_IDLE_TIMEOUT` (30 s) with no browser attached, the live poller sto
 no Docker API calls. It sleeps until a page connects again, then takes a one-second baseline so the first numbers
 it shows are real rather than zeros.
 
+A browser that vanishes without closing its stream, like a phone dropping off Wi-Fi, has to stop counting as a
+viewer too. Every frame has 15 seconds to leave, and on Linux every connection carries a 30-second
+`TCP_USER_TIMEOUT`, so the kernel gives up on the missing phone in half a minute rather than the ~15 minutes TCP
+retransmission takes by default.
+
 The storage map follows the same rule, one folder at a time. Nothing is walked at startup. Opening a folder reads
 that one directory, and each subfolder's size comes from a small cache file. Only a subfolder the cache has
 never seen, or has not measured for `KANSHI_STORAGE_INTERVAL` (six hours), is walked, and only its own subtree.
@@ -114,7 +119,9 @@ rather than one, which is also steadier to read.
 On Windows the daemon is reached over Docker Desktop's named pipe. The pipe is opened for overlapped I/O and
 handed to `os.NewFile`, which since Go 1.25 puts such handles on the runtime's poller: the HTTP client gets
 cancellation and deadlines without a third-party pipe library. When no daemon answers at all, kanshi only looks
-again once a minute.
+again once a minute. A daemon that accepts the connection and then hangs gets five seconds (or one poll
+interval, if longer) per tick, so the processor and memory cards keep updating, and the page says Docker did not
+answer. A container whose own stats call fails stays in the table with its figures shown as unknown.
 
 ## Reading the host cheaply
 

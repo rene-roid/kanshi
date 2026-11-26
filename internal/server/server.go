@@ -128,7 +128,7 @@ func (s *Server) sampleOnce(ctx context.Context) Frame {
 		defer wg.Done()
 		host = s.vitals.Sample()
 	}()
-	containers = s.docker.Sample(ctx)
+	containers = s.sampleDocker(ctx)
 	wg.Wait()
 
 	scan := s.storage.Status()
@@ -143,6 +143,15 @@ func (s *Server) sampleOnce(ctx context.Context) Frame {
 	return frame
 }
 
+// sampleDocker bounds one Docker pass, so a daemon that accepts connections
+// and then hangs costs the page its container list for a tick, not its CPU
+// and memory numbers too.
+func (s *Server) sampleDocker(ctx context.Context) dockerstats.Result {
+	ctx, cancel := context.WithTimeout(ctx, max(s.cfg.PollInterval, 5*time.Second))
+	defer cancel()
+	return s.docker.Sample(ctx)
+}
+
 // seed fills the delta baselines so the first frame shows real numbers.
 //
 // Both CPU readings are differences against a previous sample, so a cold poller
@@ -150,7 +159,7 @@ func (s *Server) sampleOnce(ctx context.Context) Frame {
 // gap costs ~1s and makes the first frame the user sees correct.
 func (s *Server) seed(ctx context.Context) {
 	s.vitals.Prime()
-	s.docker.Sample(ctx)
+	s.sampleDocker(ctx)
 	select {
 	case <-ctx.Done():
 		return

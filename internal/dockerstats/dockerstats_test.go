@@ -2,7 +2,11 @@ package dockerstats
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,5 +66,56 @@ func TestPortsCollapseDualStack(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("port %d = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+func fakeDaemon(t *testing.T, handler http.HandlerFunc) *Client {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return New(config.Config{DockerHost: "tcp://" + srv.Listener.Addr().String(), DockerConcurrency: 2})
+}
+
+// A running container whose stats call fails stays in the list, marked, so
+// the counts and the rows agree and a sick service does not vanish.
+func TestFailedStatsKeepTheRow(t *testing.T) {
+	c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/containers/json"):
+			fmt.Fprint(w, `[{"Id":"aaaaaaaaaaaaaaaa","Names":["/web"],"State":"running","Status":"Up 1 hour"},
+				{"Id":"bbbbbbbbbbbbbbbb","Names":["/db"],"State":"running","Status":"Up 1 hour"},
+				{"Id":"cccccccccccccccc","Names":["/old"],"State":"exited","Status":"Exited (0)"}]`)
+		case strings.Contains(r.URL.Path, "/bbbbbbbbbbbbbbbb/"):
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			fmt.Fprint(w, `{}`)
+		}
+	})
+	r := c.Sample(context.Background())
+	if r.Error != "" || r.Running != 2 || r.Total != 3 || len(r.Containers) != 3 {
+		t.Fatalf("sample = %+v", r)
+	}
+	noStats := map[string]bool{}
+	for _, ct := range r.Containers {
+		noStats[ct.Name] = ct.NoStats
+	}
+	if want := map[string]bool{"web": false, "db": true, "old": false}; fmt.Sprint(noStats) != fmt.Sprint(want) {
+		t.Errorf("no_stats = %v, want %v", noStats, want)
+	}
+}
+
+// A daemon that accepts the connection and never answers is reported as
+// slow, not as missing, and returns when the caller's deadline does.
+func TestHungDaemonTimesOut(t *testing.T) {
+	c := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	r := c.Sample(ctx)
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("sample took %v", took)
+	}
+	if r.Unavailable || r.Error != "Docker did not answer in time." {
+		t.Fatalf("sample = %+v", r)
 	}
 }
