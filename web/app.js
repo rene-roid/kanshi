@@ -969,6 +969,14 @@
 
   /* ── live stream ────────────────────────────────────────────────────── */
   let source = null, retry = 1000, retryTimer = null;
+  // A connection can die without onerror (a NAT drops it, a phone wakes from
+  // sleep), leaving the page frozen on its last frame. Missing three ticks in
+  // a row counts as dead.
+  let pollMs = 5000, staleTimer = null;
+  function armStale() {
+    clearTimeout(staleTimer);
+    staleTimer = setTimeout(() => { setConn("down", "stale"); connect(); }, pollMs * 3);
+  }
   function setConn(state, text) {
     const el = $("#conn");
     el.className = "conn " + state;
@@ -978,6 +986,7 @@
 
   function disconnect() {
     clearTimeout(retryTimer);
+    clearTimeout(staleTimer);
     if (source) { source.close(); source = null; }
   }
 
@@ -985,8 +994,10 @@
     disconnect();
     if (document.hidden) return;
     source = new EventSource("/api/stream");
+    armStale();
     source.onopen = () => { retry = 1000; setConn("live", "live"); };
     source.onmessage = (ev) => {
+      armStale();
       let payload;
       try { payload = JSON.parse(ev.data); } catch (e) { return; }
       setConn("live", "live");
@@ -1106,7 +1117,10 @@
     }
   });
 
-  fetch("/api/config").then((r) => r.json()).then((c) => { appVersion = c.version || ""; }).catch(() => {});
+  fetch("/api/config").then((r) => r.json()).then((c) => {
+    appVersion = c.version || "";
+    if (c.poll_interval > 0) pollMs = c.poll_interval * 1000;
+  }).catch(() => {});
   loadAccess();
 
   /* ── theme toggle ───────────────────────────────────────────────────── */
