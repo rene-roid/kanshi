@@ -17,6 +17,13 @@
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
+  // The server's error text is written for people, so it is passed through.
+  async function getJSON(url, init) {
+    const res = await fetch(url, init);
+    if (!res.ok) throw new Error((await res.text()).trim() || "HTTP " + res.status);
+    return res.json();
+  }
+
   /* ── formatting ─────────────────────────────────────────────────────── */
   function bytes(n) {
     if (n === null || n === undefined || isNaN(n)) return "—";
@@ -25,10 +32,6 @@
     let v = n / KB, i = 0;
     while (v >= KB && i < units.length - 1) { v /= KB; i++; }
     return (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)) + " " + units[i];
-  }
-  function rate(n) {
-    if (!n || n < 1) return "0";
-    return bytes(n) + "/s";
   }
   function shortRate(n) {
     if (!n || n < KB) return "0";
@@ -92,32 +95,34 @@
   }
 
   /* ── meters ─────────────────────────────────────────────────────────── */
-  function meter(name, pct, detail, warn, crit) {
-    const cls = severity(pct, warn, crit);
-    const word = severityWord(cls);
-    return '<div class="meter ' + cls + '">' +
-      '<div class="meter-head"><span class="meter-name">' + name + "</span>" +
-      '<span class="meter-val">' + (word ? '<span class="flag">⚠</span>' + word + " · " : "") +
-      "<b>" + pct.toFixed(1) + "%</b> · " + detail + "</span></div>" +
-      '<div class="meter-track"><div class="meter-fill" style="width:' + Math.min(100, pct) + '%"></div></div>' +
-      "</div>";
-  }
+  // Kept across ticks so the fill's width transition has something to animate.
+  let meterEls = [];
   function renderMeters(v) {
-    const parts = [
-      meter("RAM", v.memory.percent, bytes(v.memory.used) + " of " + bytes(v.memory.total), 80, 92),
-    ];
-    if (v.swap.total > 0) {
-      parts.push(meter("Swap", v.swap.percent, bytes(v.swap.used) + " of " + bytes(v.swap.total), 50, 80));
+    const rows = [["RAM", v.memory.percent, bytes(v.memory.used) + " of " + bytes(v.memory.total), 80, 92]];
+    if (v.swap.total > 0) rows.push(["Swap", v.swap.percent, bytes(v.swap.used) + " of " + bytes(v.swap.total), 50, 80]);
+    v.filesystems.forEach((fs) => { rows.push([fs.label, fs.percent, bytes(fs.free) + " free", 80, 92]); });
+    const host = $("#meters");
+    if (meterEls.length !== rows.length) {
+      host.innerHTML = rows.map(() => '<div class="meter"><div class="meter-head"><span class="meter-name"></span>' +
+        '<span class="meter-val"></span></div><div class="meter-track"><div class="meter-fill"></div></div></div>').join("");
+      meterEls = Array.from(host.children, (el) => ({ el: el, name: el.querySelector(".meter-name"),
+        val: el.querySelector(".meter-val"), fill: el.querySelector(".meter-fill") }));
     }
-    v.filesystems.forEach((fs) => {
-      parts.push(meter(escapeHtml(fs.label), fs.percent, bytes(fs.free) + " free", 80, 92));
+    rows.forEach((r, i) => {
+      const m = meterEls[i], pct = r[1], cls = severity(pct, r[3], r[4]), word = severityWord(cls);
+      if (m.el.className !== "meter " + cls) m.el.className = "meter " + cls;
+      setText(m.name, r[0]);
+      setHTML(m.val, (word ? '<span class="flag">⚠</span>' + word + " · " : "") + "<b>" + pct.toFixed(1) + "%</b> · " + r[2]);
+      const width = Math.min(100, pct) + "%";
+      if (m.fill.style.width !== width) m.fill.style.width = width;
     });
-    setHTML($("#meters"), parts.join(""));
   }
 
   /* ── containers ─────────────────────────────────────────────────────── */
   let sortKey = "cpu";
   let lastDocker = null;
+  const EMPTY_TEXT = $("#ctr-empty").textContent;
+  let hostMem = 0;
 
   function netTotal(c) { return c.net ? c.net.rx_rate + c.net.tx_rate : -1; }
 
@@ -226,9 +231,19 @@
     // Bar width is capped at one full core so a 300% spike stays readable.
     const width = Math.min(100, c.cpu) + "%";
     if (row.bar.style.width !== width) row.bar.style.width = width;
-    setText(row.cpu, running ? c.cpu.toFixed(1) + "%" : "—");
-    setText(row.mem, running ? bytes(c.mem_used) : "—");
-    setText(row.net, c.net ? "↓" + shortRate(c.net.rx_rate) + " ↑" + shortRate(c.net.tx_rate) : (running ? "shared" : "—"));
+    // A stats call that failed leaves zeros, which would read as an idle container.
+    const live = running && !c.no_stats;
+    setText(row.cpu, live ? c.cpu.toFixed(1) + "%" : "—");
+    // Docker reports the host's memory as the limit when none is set, so only
+    // a smaller one is a real cap worth showing.
+    const capped = live && c.mem_limit > 0 && c.mem_limit < hostMem;
+    // The line break folds to a space except on a phone, where it stacks.
+    setText(row.mem, live ? bytes(c.mem_used) + (capped ? "\n(" + c.mem_percent.toFixed(0) + "%)" : "") : "—");
+    const memCls = capped ? "num lim " + severity(c.mem_percent, 80, 92) : "num";
+    if (row.mem.className !== memCls) row.mem.className = memCls;
+    const memTitle = capped ? "of a " + bytes(c.mem_limit) + " limit" : "";
+    if (row.mem.title !== memTitle) row.mem.title = memTitle;
+    setText(row.net, !live ? "—" : c.net ? "↓" + shortRate(c.net.rx_rate) + " ↑" + shortRate(c.net.tx_rate) : "shared");
     const cls = running ? "" : "is-stopped";
     if (row.tr.className !== cls) row.tr.className = cls;
     const title = c.full_name || c.name;
@@ -239,16 +254,15 @@
     lastDocker = d;
     if (!d) return;
     // No daemon at all (a laptop without Docker) is not an error, just
-    // nothing to show.
-    $("#ctr-empty").hidden = !d.unavailable;
-    $(".sortbar").hidden = !!d.unavailable;
-    $("#ctr-tbl").hidden = !!d.unavailable;
-    if (d.unavailable) {
-      $("#ctr-meta").textContent = "not detected";
-      return;
-    }
-    if (d.error) {
-      $("#ctr-meta").textContent = "docker: " + d.error;
+    // nothing to show. A daemon that answered badly is, and the old rows must
+    // not stay up looking live.
+    const empty = d.unavailable ? EMPTY_TEXT : d.error || "";
+    $("#ctr-empty").hidden = !empty;
+    $(".sortbar").hidden = !!empty;
+    $("#ctr-tbl").hidden = !!empty;
+    if (empty) {
+      setText($("#ctr-empty"), empty);
+      $("#ctr-meta").textContent = d.unavailable ? "not detected" : "error";
       return;
     }
     const list = d.containers.slice();
@@ -279,8 +293,10 @@
 
   document.querySelectorAll(".sortbar .chip").forEach((chip) => {
     chip.addEventListener("click", () => {
-      document.querySelectorAll(".sortbar .chip").forEach((c) => c.classList.remove("is-on"));
-      chip.classList.add("is-on");
+      document.querySelectorAll(".sortbar .chip").forEach((c) => {
+        c.classList.toggle("is-on", c === chip);
+        c.setAttribute("aria-pressed", c === chip);
+      });
       sortKey = chip.dataset.sort;
       renderContainers(lastDocker);
     });
@@ -292,12 +308,23 @@
   // opened. Subfolders the server has not sized yet come back pending; it
   // walks them in the background, and the live stream says when one is done.
   const svg = $("#treemap");
+  const storTbody = $("#stor-tbl").querySelector("tbody");
   let storage = null;     // walk queue status plus one summary per root
   let rootIndex = 0;
   let segs = [];          // path below the root, one directory name per level
   let listing = null;     // the directory on screen
   let items = [];         // its contents as rendered, largest first
   let navToken = 0;       // drops a slow response that a newer click overtook
+  let navWant = null;     // the folder still loading, so a refresh goes there too
+  let hint = "";          // the status last written to #tm-focus
+
+  // #tm-focus also carries hover text, so it is not a live region itself;
+  // only a status worth hearing goes to the hidden one beside it.
+  function setHint(text) {
+    hint = text;
+    $("#tm-focus").textContent = text;
+    $("#stor-status").textContent = text;
+  }
 
   // The table starts short and grows on request. The treemap always covers the
   // whole directory, but slivers too thin to see or tap share one tile.
@@ -354,29 +381,37 @@
     return "root=" + root + "&path=" + encodeURIComponent(path.join("/"));
   }
 
-  async function navigate(root, path, keepShown) {
+  // A background refresh redraws the same folder: it keeps the hover text and
+  // the focused tile or row, which a rebuild would otherwise throw away.
+  async function navigate(root, path, keepShown, background) {
     const token = ++navToken;
+    navWant = { root: root, path: path, keepShown: keepShown };
     let l;
     try {
       const res = await fetch("/api/storage/dir?" + dirQuery(root, path));
       if (!res.ok) throw new Error("HTTP " + res.status);
       l = await res.json();
     } catch (err) {
-      if (token === navToken) $("#tm-focus").textContent = "Could not load that folder — try again.";
+      if (token === navToken) {
+        navWant = null;
+        setHint("Could not load that folder — try again.");
+      }
       return;
     }
     if (token !== navToken) return;
+    navWant = null;
     if (root !== rootIndex) renderRootBar(root);
     rootIndex = root;
     segs = l.path ? l.path.split("/") : [];
     listing = l;
     if (!keepShown) shown = PAGE;
-    drawView();
-    $("#tm-focus").textContent = l.partial
+    drawView(background);
+    const next = l.partial
       ? "That folder is gone or can't be opened — showing the closest one that is still there."
       : l.pending
         ? "Sizing " + plural(l.pending, "folder") + " — the map fills in as each one is done."
         : (matchMedia("(pointer: fine)").matches ? "Click" : "Tap") + " a block to drill in.";
+    if (!background || next !== hint) setHint(next);
     // The server has just queued those folders. Say so now rather than at the
     // next live frame, which brings the details.
     if (l.pending && storage && !storage.scanning) {
@@ -471,7 +506,7 @@
 
   function renderRootBar(active) {
     const rootChips = storage.roots.map((r, i) =>
-      '<button role="tab" class="chip' + (i === active ? " is-on" : "") + '" data-root="' + i + '" type="button" aria-selected="' +
+      '<button class="chip' + (i === active ? " is-on" : "") + '" data-root="' + i + '" type="button" aria-pressed="' +
       (i === active) + '">' + escapeHtml(r.name) + (r.size == null ? "" : " · " + bytes(r.size)) + "</button>").join("");
     const pinChips = pins.map((p, i) => {
       const label = escapeHtml(p.label);
@@ -479,8 +514,8 @@
         '<button type="button" class="pin-go" title="' + label + '">' + label + "</button>" +
         '<button type="button" class="pin-x" aria-label="Remove pinned path">×</button></span>';
     }).join("");
-    $("#rootbar").innerHTML = rootChips + pinChips +
-      '<button class="chip pin-add" data-add="1" type="button">+ Add path</button>';
+    setHTML($("#rootbar"), rootChips + pinChips +
+      '<button class="chip pin-add" data-add="1" type="button">+ Add path</button>');
   }
 
   $("#rootbar").addEventListener("click", (ev) => {
@@ -500,11 +535,11 @@
     let root = storage.roots[rootIndex].name;
     if (segs.length && root.length > 1 && root.slice(-1) === sep()) root = root.slice(0, -1);
     const names = [root].concat(segs);
-    $("#crumbs").innerHTML = names.map((n, i) => {
+    setHTML($("#crumbs"), names.map((n, i) => {
       const last = i === names.length - 1;
       return '<button type="button" data-depth="' + i + '"' + (last ? " disabled" : "") + ">" + escapeHtml(n) + "</button>" +
         (last ? "" : '<span class="sep">' + escapeHtml(sep()) + "</span>");
-    }).join("");
+    }).join(""));
   }
 
   $("#crumbs").addEventListener("click", (ev) => {
@@ -515,12 +550,12 @@
   function emptyStorage(message) {
     listing = null;
     items = [];
-    $("#rootbar").innerHTML = "";
-    $("#crumbs").innerHTML = "";
+    setHTML($("#rootbar"), "");
+    setHTML($("#crumbs"), "");
     svg.textContent = "";
-    $("#stor-tbl").querySelector("tbody").innerHTML = "";
+    storTbody.innerHTML = "";
     $("#stor-more").hidden = true;
-    $("#tm-focus").textContent = message;
+    setHint(message);
     $("#stor-meta").textContent = "";
   }
 
@@ -579,7 +614,7 @@
       const share = total ? (d.size / total * 100) : 0;
       const tappable = d.kind === "dir" || d.files;
       const glyph = d.kind === "dir" ? "▸" : d.kind === "file" ? "·" : "⋯";
-      html += "<tr" + (tappable ? ' class="tap" data-i="' + i + '"' : "") + ">" +
+      html += "<tr" + (tappable ? ' class="tap" tabindex="0" data-i="' + i + '"' : "") + ">" +
         '<td><div class="name-cell"><span class="g" aria-hidden="true">' + glyph + "</span><span>" +
         escapeHtml(d.name) + "</span></div></td>" +
         (d.pending
@@ -587,7 +622,7 @@
           : '<td class="num">' + bytes(d.size) + "</td>" +
             '<td class="num">' + share.toFixed(1) + "%</td></tr>");
     }
-    $("#stor-tbl").querySelector("tbody").innerHTML = html || '<tr><td colspan="3" class="muted">Empty</td></tr>';
+    storTbody.innerHTML = html || '<tr><td colspan="3" class="muted">Empty</td></tr>';
 
     const left = items.length - count;
     $("#stor-more").hidden = items.length <= PAGE;
@@ -599,9 +634,15 @@
     $("#stor-count").textContent = count + " of " + items.length;
   }
 
-  $("#stor-tbl").querySelector("tbody").addEventListener("click", (ev) => {
+  storTbody.addEventListener("click", (ev) => {
     const tr = ev.target.closest("tr.tap");
     if (tr) activate(items[+tr.dataset.i]);
+  });
+  storTbody.addEventListener("keydown", (ev) => {
+    const tr = ev.target.closest("tr.tap");
+    if (!tr || (ev.key !== "Enter" && ev.key !== " ")) return;
+    ev.preventDefault();
+    activate(items[+tr.dataset.i]);
   });
   $("#stor-more-btn").addEventListener("click", () => { shown += MORE; renderTable(); });
   $("#stor-all-btn").addEventListener("click", () => { shown = items.length; renderTable(); });
@@ -625,17 +666,38 @@
   $("#show-files").addEventListener("click", () => setShowFiles(!showFiles));
   renderFilesToggle();
 
-  function drawView() {
+  function drawView(background) {
+    const a = document.activeElement;
+    const inMap = svg.contains(a), inTable = storTbody.contains(a), inCrumbs = $("#crumbs").contains(a);
+    const was = background && a && a.dataset && a.dataset.i !== undefined && (inMap || inTable)
+      ? (inMap ? svg.__tm.items : items)[+a.dataset.i] : null;
     items = viewItems();
     renderCrumbs();
     drawTreemap();
     renderTable();
     renderMeta();
+    if (was) {
+      const list = inMap ? svg.__tm.items : items;
+      const i = list.findIndex((d) => d.name === was.name && d.kind === was.kind);
+      const el = i >= 0 && (inMap ? svg : storTbody).querySelector('[data-i="' + i + '"]');
+      if (el) el.focus({ preventScroll: true });
+    } else if (!background && (inMap || inTable || inCrumbs)) {
+      // The element that had focus was just replaced; land on the new folder's
+      // first entry in the same widget rather than on <body>.
+      const first = (inTable ? storTbody.querySelector("tr.tap") : null) || svg.querySelector(".tile");
+      if (first) first.focus({ preventScroll: true });
+    }
   }
 
+  let storageFailed = false;
   async function loadStorage() {
     let snap;
-    try { snap = await (await fetch("/api/storage")).json(); } catch (err) { return; }
+    try { snap = await getJSON("/api/storage"); } catch (err) {
+      const msg = "Could not load the storage map: " + err.message;
+      if (storage) setHint(msg);
+      else { storageFailed = true; emptyStorage(msg + ". Trying again with the next update."); }
+      return;
+    }
     storage = snap;
     $("#pinform-input").placeholder = windowsPaths() ? "C:\\Users\\you\\Downloads" : "/mnt/data/media/movies";
     renderScanStatus();
@@ -645,16 +707,21 @@
     }
     if (rootIndex >= snap.roots.length) { rootIndex = 0; segs = []; }
     renderRootBar(rootIndex);
-    // Re-read the same folder, so a walk finishing in the background fills in
-    // its sizes without kicking the user back to the root.
-    await navigate(rootIndex, segs, true);
+    // Re-read the folder on screen, or the one a click is still opening, so a
+    // walk finishing in the background neither kicks the user back to the root
+    // nor overtakes their click with the folder they just left.
+    const w = navWant && navWant.root < snap.roots.length ? navWant : { root: rootIndex, path: segs, keepShown: true };
+    await navigate(w.root, w.path, w.keepShown, w !== navWant);
   }
 
   // Every live frame carries the walk queue's status, so the progress bar
   // moves without any polling, and the folder on screen is only re-read once
   // a walk completes.
   function onScanStatus(st) {
-    if (!storage) return;   // the first load is still in flight and will carry this
+    if (!storage) {   // the first load is still in flight and will carry this, or it failed
+      if (storageFailed) { storageFailed = false; loadStorage(); }
+      return;
+    }
     const finished = st.updated_at !== storage.updated_at || (st.error || null) !== (storage.error || null);
     ["scanning", "current", "queued", "progress", "updated_at", "error"].forEach((k) => { storage[k] = st[k]; });
     renderScanStatus();
@@ -681,6 +748,7 @@
   // off the live stream or out of the history.
   function renderFrame(f, stamp) {
     if (f.vitals) {
+      hostMem = f.vitals.memory.total;
       renderCpu(f.vitals);
       renderMeters(f.vitals);
       $("#uptime").textContent = "up " + duration(f.vitals.uptime);
@@ -705,7 +773,7 @@
     points: [],               // [t, cpu%, mem%], oldest first
     at: null,                 // the record on screen, or null when live
   };
-  let lastLive = null, lastLiveStamp = "", tlToken = 0;
+  let lastLive = null, lastLiveStamp = "", tlToken = 0, tlLoad = 0;
 
   function clock(t, withDate) {
     const d = new Date(t * 1000);
@@ -718,18 +786,22 @@
     return chip ? chip.textContent + " ago" : "";
   }
 
+  // Resolves to whether the server answered. Only the newest load draws, so
+  // quick range clicks cannot leave a different range on screen than the chip.
   async function loadTimeline() {
+    const token = ++tlLoad;
     const to = Math.floor(Date.now() / 1000), from = to - tl.range;
     // About one point per pixel: finer than that is invisible.
     const n = Math.max(60, Math.min(1000, Math.round(tlSvg.getBoundingClientRect().width) || 600));
     let h;
-    try { h = await (await fetch("/api/history?from=" + from + "&to=" + to + "&n=" + n)).json(); } catch (e) { return; }
+    try { h = await getJSON("/api/history?from=" + from + "&to=" + to + "&n=" + n); } catch (e) { return false; }
+    if (token !== tlLoad) return true;
     histInfo = h;
     $("#timeline").hidden = !h.enabled;
     if (!h.enabled) {
       // Turned off while looking back: there is nothing left to look at.
       if (tl.at !== null) goLive();
-      return;
+      return true;
     }
     tl.from = from; tl.to = to;
     tl.points = h.points;
@@ -741,6 +813,7 @@
     });
     $("#tl-from").textContent = rangeLabel();
     drawTimeline();
+    return true;
   }
 
   function tx(t) { return TL_LEFT + (t - tl.from) / (tl.to - tl.from) * (tl.w - TL_LEFT); }
@@ -899,7 +972,10 @@
   $("#tl-range").addEventListener("click", (ev) => {
     const chip = ev.target.closest(".chip");
     if (!chip) return;
-    $("#tl-range").querySelectorAll(".chip").forEach((c) => c.classList.toggle("is-on", c === chip));
+    $("#tl-range").querySelectorAll(".chip").forEach((c) => {
+      c.classList.toggle("is-on", c === chip);
+      c.setAttribute("aria-pressed", c === chip);
+    });
     tl.range = +chip.dataset.range;
     loadTimeline();
   });
@@ -921,7 +997,6 @@
   // decides whether this page may change it (only from this computer, and only
   // when the environment does not pin it); the dialog shows what it was told.
   let histInfo = null;
-  const histDlg = $("#hist-dlg");
   const DAY_CHOICES = [1, 7, 30];
 
   function renderHistoryDialog() {
@@ -940,35 +1015,51 @@
   }
   $("#hist-on").addEventListener("change", () => { $("#hist-days").disabled = !$("#hist-on").checked; });
 
-  $("#hist-open").addEventListener("click", async () => {
-    $("#hist-err").textContent = "";
-    await loadTimeline();
-    if (!histInfo) return;
-    renderHistoryDialog();
-    histDlg.showModal();
-  });
+  // History and Network are one dialog underneath: read the setting, show it,
+  // post a change. load resolves to the setting, or null when unreachable.
+  function settingDialog(id, url, load, render, body, saved) {
+    const err = $("#" + id + "-err");
+    $("#" + id + "-open").addEventListener("click", async () => {
+      err.textContent = "";
+      if (await load()) render();
+      else {
+        err.textContent = "Could not reach kanshi. Try again.";
+        $("#" + id + "-opts").disabled = true;
+        $("#" + id + "-save").hidden = true;
+      }
+      $("#" + id + "-dlg").showModal();
+    });
+    $("#" + id + "-save").addEventListener("click", async () => {
+      err.textContent = "";
+      try {
+        const st = await getJSON(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Kanshi": "1" },
+          body: JSON.stringify(body()),
+        });
+        saved(st);
+        render();
+        if (st.reason) err.textContent = st.reason;
+      } catch (e) {
+        err.textContent = "Could not change it: " + e.message;
+      }
+    });
+  }
 
-  $("#hist-save").addEventListener("click", async () => {
-    const days = $("#hist-on").checked ? +$("#hist-days").value : 0;
-    $("#hist-err").textContent = "";
-    try {
-      const res = await fetch("/api/history", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Kanshi": "1" },
-        body: JSON.stringify({ days: days }),
-      });
-      if (!res.ok) throw new Error((await res.text()).trim() || "HTTP " + res.status);
-      histInfo = await res.json();
-      renderHistoryDialog();
-      if (histInfo.reason) $("#hist-err").textContent = histInfo.reason;
-      loadTimeline();
-    } catch (err) {
-      $("#hist-err").textContent = "Could not change it: " + err.message;
-    }
-  });
+  settingDialog("hist", "/api/history", async () => (await loadTimeline()) && histInfo, renderHistoryDialog,
+    () => ({ days: $("#hist-on").checked ? +$("#hist-days").value : 0 }),
+    (st) => { histInfo = st; loadTimeline(); });
 
   /* ── live stream ────────────────────────────────────────────────────── */
   let source = null, retry = 1000, retryTimer = null;
+  // A connection can die without onerror (a NAT drops it, a phone wakes from
+  // sleep), leaving the page frozen on its last frame. Missing three ticks in
+  // a row counts as dead.
+  let pollMs = 5000, staleTimer = null;
+  function armStale() {
+    clearTimeout(staleTimer);
+    staleTimer = setTimeout(() => { setConn("down", "stale"); connect(); }, pollMs * 3);
+  }
   function setConn(state, text) {
     const el = $("#conn");
     el.className = "conn " + state;
@@ -978,6 +1069,7 @@
 
   function disconnect() {
     clearTimeout(retryTimer);
+    clearTimeout(staleTimer);
     if (source) { source.close(); source = null; }
   }
 
@@ -985,8 +1077,10 @@
     disconnect();
     if (document.hidden) return;
     source = new EventSource("/api/stream");
+    armStale();
     source.onopen = () => { retry = 1000; setConn("live", "live"); };
     source.onmessage = (ev) => {
+      armStale();
       let payload;
       try { payload = JSON.parse(ev.data); } catch (e) { return; }
       setConn("live", "live");
@@ -1070,43 +1164,22 @@
   });
 
   async function loadAccess() {
-    try {
-      access = await (await fetch("/api/access")).json();
-    } catch (err) { return; }
+    try { access = await getJSON("/api/access"); } catch (err) { return null; }
     renderAccessLine();
     if (dlg.open) renderAccessDialog();
+    return access;
   }
 
-  $("#access-open").addEventListener("click", async () => {
-    $("#access-err").textContent = "";
-    await loadAccess();
-    if (!access) return;
-    renderAccessDialog();
-    dlg.showModal();
-  });
-
-  $("#access-save").addEventListener("click", async () => {
+  settingDialog("access", "/api/access", loadAccess, renderAccessDialog, () => {
     const extra = (access.mode || "").split(",").filter((t) => ["local", "lan", "tailscale", "all", ""].indexOf(t) < 0);
     const picked = box("all").checked ? ["all"] : ["lan", "tailscale"].filter((n) => box(n).checked);
-    const mode = picked.concat(box("all").checked ? [] : extra).join(",") || "local";
-    $("#access-err").textContent = "";
-    try {
-      const res = await fetch("/api/access", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Kanshi": "1" },
-        body: JSON.stringify({ mode: mode }),
-      });
-      if (!res.ok) throw new Error((await res.text()).trim() || "HTTP " + res.status);
-      access = await res.json();
-      renderAccessLine();
-      renderAccessDialog();
-      if (access.reason) $("#access-err").textContent = access.reason;
-    } catch (err) {
-      $("#access-err").textContent = "Could not change it: " + err.message;
-    }
-  });
+    return { mode: picked.concat(box("all").checked ? [] : extra).join(",") || "local" };
+  }, (st) => { access = st; renderAccessLine(); });
 
-  fetch("/api/config").then((r) => r.json()).then((c) => { appVersion = c.version || ""; }).catch(() => {});
+  fetch("/api/config").then((r) => r.json()).then((c) => {
+    appVersion = c.version || "";
+    if (c.poll_interval > 0) pollMs = c.poll_interval * 1000;
+  }).catch(() => {});
   loadAccess();
 
   /* ── theme toggle ───────────────────────────────────────────────────── */

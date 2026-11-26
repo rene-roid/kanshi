@@ -3,23 +3,31 @@
    (blue = CPU, orange = RAM on the history timeline); validated all-pairs in
    both modes, so the timeline is safe under every CVD simulation. Everything else is ink, surface
    or a reserved status token. */
+/* Each token is light-dark(light, dark). The system picks the scheme unless
+   the theme button pins one. */
+:root { color-scheme: light dark; }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 .viz-root {
-  color-scheme: light;
-  --plane:          #f9f9f7;
-  --surface-1:      #fcfcfb;
-  --text-primary:   #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted:     #898781;
-  --gridline:       #e1e0d9;
-  --baseline:       #c3c2b7;
-  --border:         rgba(11, 11, 11, 0.10);
+  --plane:          light-dark(#f9f9f7, #0d0d0d);
+  --surface-1:      light-dark(#fcfcfb, #1a1a19);
+  --text-primary:   light-dark(#0b0b0b, #ffffff);
+  --text-secondary: light-dark(#52514e, #c3c2b7);
+  --text-muted:     light-dark(#73726d, #898781);
+  --gridline:       light-dark(#e1e0d9, #2c2c2a);
+  --baseline:       light-dark(#c3c2b7, #383835);
+  --border:         light-dark(rgba(11, 11, 11, 0.10), rgba(255, 255, 255, 0.10));
 
-  --series-1:       #2a78d6;   /* categorical slot 1: CPU */
-  --series-2:       #eb6834;   /* categorical slot 2: RAM, on the timeline only */
-  --neutral-mark:   #c3c2b7;   /* aggregated "other" — deliberately not a slot */
-  --tile:           #1c5cab;   /* blue ramp step 550; white label = 7.1:1 */
+  --series-1:       light-dark(#2a78d6, #3987e5);   /* categorical slot 1: CPU */
+  --series-2:       light-dark(#eb6834, #d95926);   /* categorical slot 2: RAM, on the timeline only */
+  /* Controls, not data: a step darker than slot 1 so small text clears 4.5:1,
+     as a link on the surface and as white type on a filled chip. */
+  --accent:         light-dark(#2771ca, #3987e5);
+  --accent-fill:    light-dark(#2771ca, #3176c9);
+  --neutral-mark:   light-dark(#c3c2b7, #55544f);   /* aggregated "other" — deliberately not a slot */
+  --tile:           light-dark(#1c5cab, #256abf);   /* blue ramp step 550; white label = 7.1:1 */
   --tile-ink:       #ffffff;
-  --tile-rest-ink:  #0b0b0b;
+  --tile-rest-ink:  light-dark(#0b0b0b, #ffffff);
 
   --status-good:     #0ca30c;
   --status-warning:  #fab219;
@@ -27,54 +35,10 @@
 
   /* Meter tracks: a lighter step of the fill's own ramp, so state reads across
      the whole bar rather than only the filled part. */
-  --track-ok:   #cde2fb;
-  --track-warn: #fdeac4;
-  --track-crit: #f4d2d2;
-  --ghost:      rgba(11, 11, 11, 0.05);
-}
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) .viz-root {
-    color-scheme: dark;
-    --plane:          #0d0d0d;
-    --surface-1:      #1a1a19;
-    --text-primary:   #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted:     #898781;
-    --gridline:       #2c2c2a;
-    --baseline:       #383835;
-    --border:         rgba(255, 255, 255, 0.10);
-    --series-1:       #3987e5;
-    --series-2:       #d95926;
-    --neutral-mark:   #55544f;
-    --tile:           #256abf;
-    --tile-ink:       #ffffff;
-    --tile-rest-ink:  #ffffff;
-    --track-ok:       #184f95;
-    --track-warn:     #5c410a;
-    --track-crit:     #4f1a1a;
-    --ghost:          rgba(255, 255, 255, 0.06);
-  }
-}
-:root[data-theme="dark"] .viz-root {
-  color-scheme: dark;
-  --plane:          #0d0d0d;
-  --surface-1:      #1a1a19;
-  --text-primary:   #ffffff;
-  --text-secondary: #c3c2b7;
-  --text-muted:     #898781;
-  --gridline:       #2c2c2a;
-  --baseline:       #383835;
-  --border:         rgba(255, 255, 255, 0.10);
-  --series-1:       #3987e5;
-  --series-2:       #d95926;
-  --neutral-mark:   #55544f;
-  --tile:           #256abf;
-  --tile-ink:       #ffffff;
-  --tile-rest-ink:  #ffffff;
-  --track-ok:       #184f95;
-  --track-warn:     #5c410a;
-  --track-crit:     #4f1a1a;
-  --ghost:          rgba(255, 255, 255, 0.06);
+  --track-ok:   light-dark(#cde2fb, #184f95);
+  --track-warn: light-dark(#fdeac4, #5c410a);
+  --track-crit: light-dark(#f4d2d2, #4f1a1a);
+  --ghost:      light-dark(rgba(11, 11, 11, 0.05), rgba(255, 255, 255, 0.06));
 }
 
 * { box-sizing: border-box; }
@@ -84,6 +48,9 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   --page-max: 760px;
   --gutter: 12px;
+  /* viewport-fit=cover lets the page run under a landscape notch. */
+  --pad-l: max(var(--gutter), env(safe-area-inset-left));
+  --pad-r: max(var(--gutter), env(safe-area-inset-right));
   margin: 0;
   padding: 0 0 env(safe-area-inset-bottom);
   background: var(--plane);
@@ -102,8 +69,9 @@ body.is-stale { opacity: .55; }          /* hold the last render, never a skelet
 .topbar {
   position: sticky; top: 0; z-index: 10;
   display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; padding: 10px 16px calc(10px + env(safe-area-inset-top)) 16px;
-  padding-top: calc(10px + env(safe-area-inset-top));
+  gap: 12px;
+  padding: calc(10px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+    10px max(16px, env(safe-area-inset-left));
   background: color-mix(in srgb, var(--plane) 88%, transparent);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
@@ -122,7 +90,7 @@ body.is-stale { opacity: .55; }          /* hold the last render, never a skelet
 .conn.live i { background: var(--status-good); }
 .conn.down i { background: var(--status-critical); }
 
-main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 28px; display: grid; gap: 12px; min-width: 0; }
+main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--pad-r) 28px var(--pad-l); display: grid; gap: 12px; min-width: 0; }
 
 /* ── Cards ───────────────────────────────────────────────────────────────── */
 .card {
@@ -204,25 +172,29 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
 .rootbar, .sortbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
 .sortbar[hidden] { display: none; }
 .chip {
-  font: inherit; font-size: 12px; padding: 5px 11px; min-height: 30px;
+  font: inherit; font-size: 12px; padding: 5px 11px; min-height: 32px;
   border-radius: 999px; border: 1px solid var(--border);
   background: transparent; color: var(--text-muted); cursor: pointer;
 }
-.chip.is-on { background: var(--series-1); border-color: transparent; color: #fff; }
+.chip.is-on { background: var(--accent-fill); border-color: transparent; color: #fff; }
 /* Paths can be arbitrarily long; a wrapping row still can't shrink a single
    over-wide item, so each chip truncates at the container's width. */
 .rootbar .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Pinned custom paths: a chip made of two buttons (jump, remove) rather than
    one, so the base .chip padding has to move onto the inner buttons. */
-.chip.pin { display: inline-flex; align-items: center; gap: 0; padding: 0; max-width: 100%; }
+/* The outline is a shadow so the two buttons get the chip's full 32px height. */
+.chip.pin {
+  display: inline-flex; align-items: stretch; gap: 0; padding: 0; max-width: 100%;
+  border: 0; box-shadow: inset 0 0 0 1px var(--border);
+}
 .chip.pin .pin-go {
   font: inherit; font-size: 12px; padding: 5px 4px 5px 11px; border: 0;
   background: transparent; color: var(--text-muted); cursor: pointer;
   max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .chip.pin .pin-x {
-  font: inherit; font-size: 13px; line-height: 1; padding: 5px 10px 5px 4px;
+  font: inherit; font-size: 13px; line-height: 1; padding: 0 10px 0 4px; min-width: 32px;
   border: 0; background: transparent; color: var(--text-muted); cursor: pointer;
 }
 .chip.pin .pin-x:hover { color: var(--status-critical); }
@@ -241,7 +213,7 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
 .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-bottom: 8px; font-size: 12px; }
 .crumbs button {
   font: inherit; font-size: 12px; background: none; border: 0; padding: 4px 5px;
-  color: var(--series-1); cursor: pointer; border-radius: 5px; min-height: 28px;
+  color: var(--accent); cursor: pointer; border-radius: 5px; min-height: 28px;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .crumbs button[disabled] { color: var(--text-muted); cursor: default; }
@@ -261,9 +233,6 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
 .tm-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; }
 .legend { display: flex; gap: 14px; list-style: none; margin: 0; padding: 0; font-size: 12px; color: var(--text-muted); }
 .legend li { display: flex; align-items: center; gap: 5px; }
-.sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-.sw-dir { background: var(--tile); } .sw-file { background: var(--tile); opacity: .55; }
-.sw-rest { background: var(--neutral-mark); }
 /* Kind is carried by the glyph, not the fill — one hue means no CVD exposure. */
 .legend .g { font-size: 12px; color: var(--text-muted); width: 10px; text-align: center; }
 
@@ -278,13 +247,13 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
 .tbl tr:last-child td { border-bottom: 0; }
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tbl tbody tr.tap { cursor: pointer; }
-.tbl tbody tr.tap:hover td { background: var(--ghost); }
+.tbl tbody tr.tap:hover td, .tbl tbody tr.tap:focus-visible td { background: var(--ghost); }
+.tbl tbody tr.tap:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #stor-tbl td:first-child, #stor-tbl th:first-child { max-width: 0; width: 60%; }
 .more { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .more[hidden], .more .btn[hidden] { display: none; }
 .more .muted { margin-right: auto; }
 .name-cell { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.name-cell .sw { flex: none; }
 .name-cell .g { flex: none; width: 10px; text-align: center; color: var(--text-muted); }
 .name-cell span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -305,9 +274,8 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* Only the separator is dimmed to --baseline, and only because it is pure
-   punctuation. Everything carrying a number stays at --text-secondary: at 11px
-   these are small text, and --text-muted would put them at 3.5:1 in light mode.
-   Hierarchy comes from the underline instead, which costs no contrast. */
+   punctuation. Everything carrying a number stays at --text-secondary, and
+   hierarchy comes from the underline instead, which costs no contrast. */
 .ctr-ports .sep { font-style: normal; color: var(--baseline); padding: 0 5px; }
 .ctr-ports .arr { font-style: normal; padding: 0 1px; }
 .ctr-ports .pr { font-style: normal; padding-left: 3px; }
@@ -322,6 +290,9 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
 .dot.run { background: var(--status-good); } .dot.stop { background: var(--text-muted); }
 .dot.bad { background: var(--status-critical); }
 tr.is-stopped { opacity: .55; }
+/* Memory against the container's own limit: near it, the figure gets weight. */
+.ctr-tbl .lim.warn, .ctr-tbl .lim.crit { font-weight: 650; color: var(--text-primary); }
+@media (max-width: 559px) { .ctr-tbl .lim { white-space: pre-line; } }
 
 .foot { display: flex; justify-content: space-between; align-items: center; padding: 0 4px; }
 .foot-actions { display: flex; gap: 2px; }
@@ -345,7 +316,7 @@ tr.is-stopped { opacity: .55; }
 .dlg input[type="checkbox"] { margin: 2px 0 0; width: 16px; height: 16px; flex: none; accent-color: var(--series-1); }
 .dlg .links { list-style: none; margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid var(--gridline); display: grid; gap: 4px; font-size: 12px; }
 .dlg .links:empty { display: none; }
-.dlg .links a { color: var(--series-1); overflow-wrap: anywhere; }
+.dlg .links a { color: var(--accent); overflow-wrap: anywhere; }
 .dlg .links .k { display: inline-block; min-width: 96px; margin-right: 8px; color: var(--text-muted); }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 /* A setting that belongs to the checkbox above it, indented to its text. */
@@ -355,14 +326,14 @@ tr.is-stopped { opacity: .55; }
   border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary);
 }
 .dlg select:disabled { opacity: .5; }
-.btn-primary { background: var(--series-1); border-color: transparent; color: #fff; }
+.btn-primary { background: var(--accent-fill); border-color: transparent; color: #fff; }
 .err { margin: 0; color: var(--status-critical); }
 .err:empty { display: none; }
 
 /* ── History timeline ────────────────────────────────────────────────────── */
 .timeline .card-head { align-items: center; margin-bottom: 8px; }
 .rangebar { display: flex; gap: 4px; }
-.rangebar .chip { min-height: 26px; padding: 3px 9px; }
+.rangebar .chip { padding: 3px 9px; }
 .tl-legend { margin-bottom: 6px; }
 /* Line keys, not boxes: the legend names a line, so it shows one. */
 .key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
@@ -416,7 +387,10 @@ body.is-history .scoped { box-shadow: inset 3px 0 0 var(--text-muted); }
   body { --page-max: 1180px; --gutter: 20px; }
   main { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-block: 16px 32px; gap: 16px; }
   /* Line the title up with the cards, which stop growing at --page-max. */
-  .topbar { padding-inline: max(var(--gutter), calc((100% - var(--page-max)) / 2 + var(--gutter))); }
+  .topbar {
+    padding-left: max(var(--pad-l), calc((100% - var(--page-max)) / 2 + var(--gutter)));
+    padding-right: max(var(--pad-r), calc((100% - var(--page-max)) / 2 + var(--gutter)));
+  }
   main > * { grid-column: 1 / -1; }
   .card-cpu, .card-mem { grid-column: auto; }
   .card { padding: 18px; }
