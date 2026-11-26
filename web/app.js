@@ -95,27 +95,27 @@
   }
 
   /* ── meters ─────────────────────────────────────────────────────────── */
-  function meter(name, pct, detail, warn, crit) {
-    const cls = severity(pct, warn, crit);
-    const word = severityWord(cls);
-    return '<div class="meter ' + cls + '">' +
-      '<div class="meter-head"><span class="meter-name">' + name + "</span>" +
-      '<span class="meter-val">' + (word ? '<span class="flag">⚠</span>' + word + " · " : "") +
-      "<b>" + pct.toFixed(1) + "%</b> · " + detail + "</span></div>" +
-      '<div class="meter-track"><div class="meter-fill" style="width:' + Math.min(100, pct) + '%"></div></div>' +
-      "</div>";
-  }
+  // Kept across ticks so the fill's width transition has something to animate.
+  let meterEls = [];
   function renderMeters(v) {
-    const parts = [
-      meter("RAM", v.memory.percent, bytes(v.memory.used) + " of " + bytes(v.memory.total), 80, 92),
-    ];
-    if (v.swap.total > 0) {
-      parts.push(meter("Swap", v.swap.percent, bytes(v.swap.used) + " of " + bytes(v.swap.total), 50, 80));
+    const rows = [["RAM", v.memory.percent, bytes(v.memory.used) + " of " + bytes(v.memory.total), 80, 92]];
+    if (v.swap.total > 0) rows.push(["Swap", v.swap.percent, bytes(v.swap.used) + " of " + bytes(v.swap.total), 50, 80]);
+    v.filesystems.forEach((fs) => { rows.push([fs.label, fs.percent, bytes(fs.free) + " free", 80, 92]); });
+    const host = $("#meters");
+    if (meterEls.length !== rows.length) {
+      host.innerHTML = rows.map(() => '<div class="meter"><div class="meter-head"><span class="meter-name"></span>' +
+        '<span class="meter-val"></span></div><div class="meter-track"><div class="meter-fill"></div></div></div>').join("");
+      meterEls = Array.from(host.children, (el) => ({ el: el, name: el.querySelector(".meter-name"),
+        val: el.querySelector(".meter-val"), fill: el.querySelector(".meter-fill") }));
     }
-    v.filesystems.forEach((fs) => {
-      parts.push(meter(escapeHtml(fs.label), fs.percent, bytes(fs.free) + " free", 80, 92));
+    rows.forEach((r, i) => {
+      const m = meterEls[i], pct = r[1], cls = severity(pct, r[3], r[4]), word = severityWord(cls);
+      if (m.el.className !== "meter " + cls) m.el.className = "meter " + cls;
+      setText(m.name, r[0]);
+      setHTML(m.val, (word ? '<span class="flag">⚠</span>' + word + " · " : "") + "<b>" + pct.toFixed(1) + "%</b> · " + r[2]);
+      const width = Math.min(100, pct) + "%";
+      if (m.fill.style.width !== width) m.fill.style.width = width;
     });
-    setHTML($("#meters"), parts.join(""));
   }
 
   /* ── containers ─────────────────────────────────────────────────────── */
@@ -689,9 +689,15 @@
     }
   }
 
+  let storageFailed = false;
   async function loadStorage() {
     let snap;
-    try { snap = await (await fetch("/api/storage")).json(); } catch (err) { return; }
+    try { snap = await getJSON("/api/storage"); } catch (err) {
+      const msg = "Could not load the storage map: " + err.message;
+      if (storage) setHint(msg);
+      else { storageFailed = true; emptyStorage(msg + ". Trying again with the next update."); }
+      return;
+    }
     storage = snap;
     $("#pinform-input").placeholder = windowsPaths() ? "C:\\Users\\you\\Downloads" : "/mnt/data/media/movies";
     renderScanStatus();
@@ -712,7 +718,10 @@
   // moves without any polling, and the folder on screen is only re-read once
   // a walk completes.
   function onScanStatus(st) {
-    if (!storage) return;   // the first load is still in flight and will carry this
+    if (!storage) {   // the first load is still in flight and will carry this, or it failed
+      if (storageFailed) { storageFailed = false; loadStorage(); }
+      return;
+    }
     const finished = st.updated_at !== storage.updated_at || (st.error || null) !== (storage.error || null);
     ["scanning", "current", "queued", "progress", "updated_at", "error"].forEach((k) => { storage[k] = st[k]; });
     renderScanStatus();
