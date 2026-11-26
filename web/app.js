@@ -118,6 +118,7 @@
   /* ── containers ─────────────────────────────────────────────────────── */
   let sortKey = "cpu";
   let lastDocker = null;
+  const EMPTY_TEXT = $("#ctr-empty").textContent;
 
   function netTotal(c) { return c.net ? c.net.rx_rate + c.net.tx_rate : -1; }
 
@@ -226,9 +227,11 @@
     // Bar width is capped at one full core so a 300% spike stays readable.
     const width = Math.min(100, c.cpu) + "%";
     if (row.bar.style.width !== width) row.bar.style.width = width;
-    setText(row.cpu, running ? c.cpu.toFixed(1) + "%" : "—");
-    setText(row.mem, running ? bytes(c.mem_used) : "—");
-    setText(row.net, c.net ? "↓" + shortRate(c.net.rx_rate) + " ↑" + shortRate(c.net.tx_rate) : (running ? "shared" : "—"));
+    // A stats call that failed leaves zeros, which would read as an idle container.
+    const live = running && !c.no_stats;
+    setText(row.cpu, live ? c.cpu.toFixed(1) + "%" : "—");
+    setText(row.mem, live ? bytes(c.mem_used) : "—");
+    setText(row.net, !live ? "—" : c.net ? "↓" + shortRate(c.net.rx_rate) + " ↑" + shortRate(c.net.tx_rate) : "shared");
     const cls = running ? "" : "is-stopped";
     if (row.tr.className !== cls) row.tr.className = cls;
     const title = c.full_name || c.name;
@@ -239,16 +242,15 @@
     lastDocker = d;
     if (!d) return;
     // No daemon at all (a laptop without Docker) is not an error, just
-    // nothing to show.
-    $("#ctr-empty").hidden = !d.unavailable;
-    $(".sortbar").hidden = !!d.unavailable;
-    $("#ctr-tbl").hidden = !!d.unavailable;
-    if (d.unavailable) {
-      $("#ctr-meta").textContent = "not detected";
-      return;
-    }
-    if (d.error) {
-      $("#ctr-meta").textContent = "docker: " + d.error;
+    // nothing to show. A daemon that answered badly is, and the old rows must
+    // not stay up looking live.
+    const empty = d.unavailable ? EMPTY_TEXT : d.error ? "Docker: " + d.error : "";
+    $("#ctr-empty").hidden = !empty;
+    $(".sortbar").hidden = !!empty;
+    $("#ctr-tbl").hidden = !!empty;
+    if (empty) {
+      setText($("#ctr-empty"), empty);
+      $("#ctr-meta").textContent = d.unavailable ? "not detected" : "error";
       return;
     }
     const list = d.containers.slice();
