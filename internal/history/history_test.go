@@ -158,3 +158,30 @@ func TestSeriesKeepsPeaks(t *testing.T) {
 }
 
 func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }
+
+// A reversed range is empty, and it must not leave the store locked: the
+// query string comes straight from any browser that can open the dashboard.
+func TestSeriesReversedRange(t *testing.T) {
+	s := open(t, t.TempDir(), 24*time.Hour)
+	defer s.Close()
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	for i := range 3 {
+		if err := s.Add(base.Add(time.Duration(i)*time.Minute), 1, 1, frame(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mid := base.Add(time.Minute).Unix()
+	if got := s.Series(mid+30, mid-30, 600); len(got) != 0 {
+		t.Fatalf("reversed range returned %d points, want 0", len(got))
+	}
+	done := make(chan int64)
+	go func() { first, _ := s.Span(); done <- first }()
+	select {
+	case first := <-done:
+		if first != base.Unix() {
+			t.Fatalf("Span first = %d, want %d", first, base.Unix())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("store still locked after a reversed range")
+	}
+}

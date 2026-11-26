@@ -210,6 +210,9 @@ func (s *Store) Span() (first, last int64) {
 // thing a timeline has to show, and averaging would sand it off. Empty buckets
 // are left out, so a gap in the records stays a gap.
 func (s *Store) Series(from, to int64, n int) []Point {
+	if from > to {
+		return nil
+	}
 	s.mu.Lock()
 	lo := sort.Search(len(s.points), func(i int) bool { return s.points[i].T >= from })
 	hi := sort.Search(len(s.points), func(i int) bool { return s.points[i].T > to })
