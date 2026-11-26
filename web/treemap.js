@@ -213,5 +213,5 @@
     for (const entry of pending) fitLabel(entry);
   }
 
-  global.Treemap = { render: render, squarify: squarify };
+  global.Treemap = { render: render };
 })(window);

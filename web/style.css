@@ -3,27 +3,31 @@
    (blue = CPU, orange = RAM on the history timeline); validated all-pairs in
    both modes, so the timeline is safe under every CVD simulation. Everything else is ink, surface
    or a reserved status token. */
+/* Each token is light-dark(light, dark). The system picks the scheme unless
+   the theme button pins one. */
+:root { color-scheme: light dark; }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 .viz-root {
-  color-scheme: light;
-  --plane:          #f9f9f7;
-  --surface-1:      #fcfcfb;
-  --text-primary:   #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted:     #73726d;
-  --gridline:       #e1e0d9;
-  --baseline:       #c3c2b7;
-  --border:         rgba(11, 11, 11, 0.10);
+  --plane:          light-dark(#f9f9f7, #0d0d0d);
+  --surface-1:      light-dark(#fcfcfb, #1a1a19);
+  --text-primary:   light-dark(#0b0b0b, #ffffff);
+  --text-secondary: light-dark(#52514e, #c3c2b7);
+  --text-muted:     light-dark(#73726d, #898781);
+  --gridline:       light-dark(#e1e0d9, #2c2c2a);
+  --baseline:       light-dark(#c3c2b7, #383835);
+  --border:         light-dark(rgba(11, 11, 11, 0.10), rgba(255, 255, 255, 0.10));
 
-  --series-1:       #2a78d6;   /* categorical slot 1: CPU */
-  --series-2:       #eb6834;   /* categorical slot 2: RAM, on the timeline only */
+  --series-1:       light-dark(#2a78d6, #3987e5);   /* categorical slot 1: CPU */
+  --series-2:       light-dark(#eb6834, #d95926);   /* categorical slot 2: RAM, on the timeline only */
   /* Controls, not data: a step darker than slot 1 so small text clears 4.5:1,
      as a link on the surface and as white type on a filled chip. */
-  --accent:         #2771ca;
-  --accent-fill:    #2771ca;
-  --neutral-mark:   #c3c2b7;   /* aggregated "other" — deliberately not a slot */
-  --tile:           #1c5cab;   /* blue ramp step 550; white label = 7.1:1 */
+  --accent:         light-dark(#2771ca, #3987e5);
+  --accent-fill:    light-dark(#2771ca, #3176c9);
+  --neutral-mark:   light-dark(#c3c2b7, #55544f);   /* aggregated "other" — deliberately not a slot */
+  --tile:           light-dark(#1c5cab, #256abf);   /* blue ramp step 550; white label = 7.1:1 */
   --tile-ink:       #ffffff;
-  --tile-rest-ink:  #0b0b0b;
+  --tile-rest-ink:  light-dark(#0b0b0b, #ffffff);
 
   --status-good:     #0ca30c;
   --status-warning:  #fab219;
@@ -31,58 +35,10 @@
 
   /* Meter tracks: a lighter step of the fill's own ramp, so state reads across
      the whole bar rather than only the filled part. */
-  --track-ok:   #cde2fb;
-  --track-warn: #fdeac4;
-  --track-crit: #f4d2d2;
-  --ghost:      rgba(11, 11, 11, 0.05);
-}
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) .viz-root {
-    color-scheme: dark;
-    --plane:          #0d0d0d;
-    --surface-1:      #1a1a19;
-    --text-primary:   #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted:     #898781;
-    --gridline:       #2c2c2a;
-    --baseline:       #383835;
-    --border:         rgba(255, 255, 255, 0.10);
-    --series-1:       #3987e5;
-    --series-2:       #d95926;
-    --accent:         #3987e5;
-    --accent-fill:    #3176c9;
-    --neutral-mark:   #55544f;
-    --tile:           #256abf;
-    --tile-ink:       #ffffff;
-    --tile-rest-ink:  #ffffff;
-    --track-ok:       #184f95;
-    --track-warn:     #5c410a;
-    --track-crit:     #4f1a1a;
-    --ghost:          rgba(255, 255, 255, 0.06);
-  }
-}
-:root[data-theme="dark"] .viz-root {
-  color-scheme: dark;
-  --plane:          #0d0d0d;
-  --surface-1:      #1a1a19;
-  --text-primary:   #ffffff;
-  --text-secondary: #c3c2b7;
-  --text-muted:     #898781;
-  --gridline:       #2c2c2a;
-  --baseline:       #383835;
-  --border:         rgba(255, 255, 255, 0.10);
-  --series-1:       #3987e5;
-  --series-2:       #d95926;
-  --accent:         #3987e5;
-  --accent-fill:    #3176c9;
-  --neutral-mark:   #55544f;
-  --tile:           #256abf;
-  --tile-ink:       #ffffff;
-  --tile-rest-ink:  #ffffff;
-  --track-ok:       #184f95;
-  --track-warn:     #5c410a;
-  --track-crit:     #4f1a1a;
-  --ghost:          rgba(255, 255, 255, 0.06);
+  --track-ok:   light-dark(#cde2fb, #184f95);
+  --track-warn: light-dark(#fdeac4, #5c410a);
+  --track-crit: light-dark(#f4d2d2, #4f1a1a);
+  --ghost:      light-dark(rgba(11, 11, 11, 0.05), rgba(255, 255, 255, 0.06));
 }
 
 * { box-sizing: border-box; }
@@ -277,9 +233,6 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--pad-r) 28
 .tm-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; }
 .legend { display: flex; gap: 14px; list-style: none; margin: 0; padding: 0; font-size: 12px; color: var(--text-muted); }
 .legend li { display: flex; align-items: center; gap: 5px; }
-.sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-.sw-dir { background: var(--tile); } .sw-file { background: var(--tile); opacity: .55; }
-.sw-rest { background: var(--neutral-mark); }
 /* Kind is carried by the glyph, not the fill — one hue means no CVD exposure. */
 .legend .g { font-size: 12px; color: var(--text-muted); width: 10px; text-align: center; }
 
@@ -301,7 +254,6 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--pad-r) 28
 .more[hidden], .more .btn[hidden] { display: none; }
 .more .muted { margin-right: auto; }
 .name-cell { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.name-cell .sw { flex: none; }
 .name-cell .g { flex: none; width: 10px; text-align: center; color: var(--text-muted); }
 .name-cell span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

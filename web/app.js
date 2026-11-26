@@ -26,10 +26,6 @@
     while (v >= KB && i < units.length - 1) { v /= KB; i++; }
     return (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)) + " " + units[i];
   }
-  function rate(n) {
-    if (!n || n < 1) return "0";
-    return bytes(n) + "/s";
-  }
   function shortRate(n) {
     if (!n || n < KB) return "0";
     const units = ["K", "M", "G"];
