@@ -290,8 +290,10 @@
 
   document.querySelectorAll(".sortbar .chip").forEach((chip) => {
     chip.addEventListener("click", () => {
-      document.querySelectorAll(".sortbar .chip").forEach((c) => c.classList.remove("is-on"));
-      chip.classList.add("is-on");
+      document.querySelectorAll(".sortbar .chip").forEach((c) => {
+        c.classList.toggle("is-on", c === chip);
+        c.setAttribute("aria-pressed", c === chip);
+      });
       sortKey = chip.dataset.sort;
       renderContainers(lastDocker);
     });
@@ -312,6 +314,14 @@
   let navToken = 0;       // drops a slow response that a newer click overtook
   let navWant = null;     // the folder still loading, so a refresh goes there too
   let hint = "";          // the status last written to #tm-focus
+
+  // #tm-focus also carries hover text, so it is not a live region itself;
+  // only a status worth hearing goes to the hidden one beside it.
+  function setHint(text) {
+    hint = text;
+    $("#tm-focus").textContent = text;
+    $("#stor-status").textContent = text;
+  }
 
   // The table starts short and grows on request. The treemap always covers the
   // whole directory, but slivers too thin to see or tap share one tile.
@@ -381,7 +391,7 @@
     } catch (err) {
       if (token === navToken) {
         navWant = null;
-        $("#tm-focus").textContent = hint = "Could not load that folder — try again.";
+        setHint("Could not load that folder — try again.");
       }
       return;
     }
@@ -398,8 +408,7 @@
       : l.pending
         ? "Sizing " + plural(l.pending, "folder") + " — the map fills in as each one is done."
         : (matchMedia("(pointer: fine)").matches ? "Click" : "Tap") + " a block to drill in.";
-    if (!background || next !== hint) $("#tm-focus").textContent = next;
-    hint = next;
+    if (!background || next !== hint) setHint(next);
     // The server has just queued those folders. Say so now rather than at the
     // next live frame, which brings the details.
     if (l.pending && storage && !storage.scanning) {
@@ -494,7 +503,7 @@
 
   function renderRootBar(active) {
     const rootChips = storage.roots.map((r, i) =>
-      '<button role="tab" class="chip' + (i === active ? " is-on" : "") + '" data-root="' + i + '" type="button" aria-selected="' +
+      '<button class="chip' + (i === active ? " is-on" : "") + '" data-root="' + i + '" type="button" aria-pressed="' +
       (i === active) + '">' + escapeHtml(r.name) + (r.size == null ? "" : " · " + bytes(r.size)) + "</button>").join("");
     const pinChips = pins.map((p, i) => {
       const label = escapeHtml(p.label);
@@ -543,7 +552,7 @@
     svg.textContent = "";
     storTbody.innerHTML = "";
     $("#stor-more").hidden = true;
-    $("#tm-focus").textContent = message;
+    setHint(message);
     $("#stor-meta").textContent = "";
   }
 
@@ -602,7 +611,7 @@
       const share = total ? (d.size / total * 100) : 0;
       const tappable = d.kind === "dir" || d.files;
       const glyph = d.kind === "dir" ? "▸" : d.kind === "file" ? "·" : "⋯";
-      html += "<tr" + (tappable ? ' class="tap" data-i="' + i + '"' : "") + ">" +
+      html += "<tr" + (tappable ? ' class="tap" tabindex="0" data-i="' + i + '"' : "") + ">" +
         '<td><div class="name-cell"><span class="g" aria-hidden="true">' + glyph + "</span><span>" +
         escapeHtml(d.name) + "</span></div></td>" +
         (d.pending
@@ -625,6 +634,12 @@
   storTbody.addEventListener("click", (ev) => {
     const tr = ev.target.closest("tr.tap");
     if (tr) activate(items[+tr.dataset.i]);
+  });
+  storTbody.addEventListener("keydown", (ev) => {
+    const tr = ev.target.closest("tr.tap");
+    if (!tr || (ev.key !== "Enter" && ev.key !== " ")) return;
+    ev.preventDefault();
+    activate(items[+tr.dataset.i]);
   });
   $("#stor-more-btn").addEventListener("click", () => { shown += MORE; renderTable(); });
   $("#stor-all-btn").addEventListener("click", () => { shown = items.length; renderTable(); });
@@ -650,7 +665,7 @@
 
   function drawView(background) {
     const a = document.activeElement;
-    const inMap = svg.contains(a), inTable = storTbody.contains(a);
+    const inMap = svg.contains(a), inTable = storTbody.contains(a), inCrumbs = $("#crumbs").contains(a);
     const was = background && a && a.dataset && a.dataset.i !== undefined && (inMap || inTable)
       ? (inMap ? svg.__tm.items : items)[+a.dataset.i] : null;
     items = viewItems();
@@ -663,6 +678,11 @@
       const i = list.findIndex((d) => d.name === was.name && d.kind === was.kind);
       const el = i >= 0 && (inMap ? svg : storTbody).querySelector('[data-i="' + i + '"]');
       if (el) el.focus({ preventScroll: true });
+    } else if (!background && (inMap || inTable || inCrumbs)) {
+      // The element that had focus was just replaced; land on the new folder's
+      // first entry in the same widget rather than on <body>.
+      const first = (inTable ? storTbody.querySelector("tr.tap") : null) || svg.querySelector(".tile");
+      if (first) first.focus({ preventScroll: true });
     }
   }
 
@@ -935,7 +955,10 @@
   $("#tl-range").addEventListener("click", (ev) => {
     const chip = ev.target.closest(".chip");
     if (!chip) return;
-    $("#tl-range").querySelectorAll(".chip").forEach((c) => c.classList.toggle("is-on", c === chip));
+    $("#tl-range").querySelectorAll(".chip").forEach((c) => {
+      c.classList.toggle("is-on", c === chip);
+      c.setAttribute("aria-pressed", c === chip);
+    });
     tl.range = +chip.dataset.range;
     loadTimeline();
   });
