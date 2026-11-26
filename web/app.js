@@ -238,7 +238,7 @@
     // a smaller one is a real cap worth showing.
     const capped = live && c.mem_limit > 0 && c.mem_limit < hostMem;
     // The line break folds to a space except on a phone, where it stacks.
-    setText(row.mem, live ? bytes(c.mem_used) + (capped ? "\n" + c.mem_percent.toFixed(0) + "%" : "") : "—");
+    setText(row.mem, live ? bytes(c.mem_used) + (capped ? "\n(" + c.mem_percent.toFixed(0) + "%)" : "") : "—");
     const memCls = capped ? "num lim " + severity(c.mem_percent, 80, 92) : "num";
     if (row.mem.className !== memCls) row.mem.className = memCls;
     const memTitle = capped ? "of a " + bytes(c.mem_limit) + " limit" : "";
@@ -256,7 +256,7 @@
     // No daemon at all (a laptop without Docker) is not an error, just
     // nothing to show. A daemon that answered badly is, and the old rows must
     // not stay up looking live.
-    const empty = d.unavailable ? EMPTY_TEXT : d.error ? "Docker: " + d.error : "";
+    const empty = d.unavailable ? EMPTY_TEXT : d.error || "";
     $("#ctr-empty").hidden = !empty;
     $(".sortbar").hidden = !!empty;
     $("#ctr-tbl").hidden = !!empty;
