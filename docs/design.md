@@ -98,6 +98,12 @@ cannot change the `Host` its requests carry), from the page's own origin, and wi
 or `<img>` on another site cannot send. It is refused outright when a flag or environment variable sets the mode,
 because that would silently undo the change on the next start.
 
+The same trick could read the dashboard instead of changing it: rebind a domain to this machine's address and
+fetch the container list or a folder listing as same-origin. So every request must name this machine in its
+`Host` header: an IP address, `localhost`, its own hostname (bare or under `.local`, `.lan`, `.home.arpa`), or a
+Tailscale `*.ts.net` name, which only resolves inside the tailnet. A reverse proxy's domain goes in
+`KANSHI_ALLOWED_HOSTS`. Anything else gets a 403 that says so.
+
 ## One-shot container stats
 
 `GET /containers/{id}/stats?stream=false` makes the Docker daemon block for a full collection cycle so it can

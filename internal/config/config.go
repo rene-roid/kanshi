@@ -86,6 +86,9 @@ type Config struct {
 	Access       string
 	AccessSource Source
 	Port         int
+	// Names besides this machine's own that the dashboard answers to, such
+	// as a reverse proxy's domain.
+	AllowedHosts []string
 
 	// The kanshi.env that was loaded, or where one would be written if the
 	// access mode is changed from the dashboard. Empty when there is nowhere
@@ -143,6 +146,7 @@ func Load(flags Flags) Config {
 		Access:            access,
 		AccessSource:      accessSrc,
 		Port:              port,
+		AllowedHosts:      l.list("KANSHI_ALLOWED_HOSTS", ""),
 		File:              path,
 		FileLoaded:        loaded,
 		WebDir:            l.string("KANSHI_WEB_DIR", ""),

@@ -118,7 +118,8 @@ Kanshi notices network changes on its own: if Tailscale connects after it starts
 Wi-Fi network, it starts listening there within 30 seconds. At startup it prints every address it can be opened at.
 
 > **Prefer `tailscale` over `all`.** `all` puts your container list and disk layout in front of anyone who can
-> reach the port. Only use it behind a firewall, or a reverse proxy that asks for a login.
+> reach the port. Only use it behind a firewall, or a reverse proxy that asks for a login. A proxy that
+> forwards its own domain needs that domain in `KANSHI_ALLOWED_HOSTS`.
 
 ## Settings
 
@@ -131,6 +132,7 @@ Precedence is: flag, then environment, then file, then the default.
 |---|---|---|---|
 | `KANSHI_ACCESS` | `--access` | `local` | Who can open the dashboard ([above](#who-can-open-it)) |
 | `KANSHI_PORT` | `--port` | `8100` | Port to listen on |
+| `KANSHI_ALLOWED_HOSTS` | | *(none)* | Extra names the dashboard answers to, comma-separated, such as a reverse proxy's domain. IP addresses, `localhost`, this machine's name (also with `.local`, `.lan`, `.home.arpa`) and Tailscale `*.ts.net` names always work; any other name is refused, so a hostile web page cannot read the dashboard through DNS rebinding |
 | `KANSHI_CONFIG` | `--config` | *(see above)* | Path of the settings file |
 | | `--open` | on when double-clicked on Windows | Open the dashboard in the browser at startup |
 | `KANSHI_STORAGE_ROOTS` | | `auto` | Folders in the storage map: `auto`, `path`, or `label=path`, comma-separated. `auto,/srv` adds to the defaults |

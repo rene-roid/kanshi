@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -46,6 +47,8 @@ type Server struct {
 	docker  *dockerstats.Client
 	storage *storage.Scanner
 	assets  *assets
+	// hostname is this machine's name, lower-cased, for checkHost.
+	hostname string
 
 	// base outlives any single request. Work that mutates shared state, such
 	// as a sample, is started under it rather than the request context, so a
@@ -90,7 +93,9 @@ func New(cfg config.Config, web fs.FS, version string, logf func(string, ...any)
 		return nil, err
 	}
 	r := roots.NewResolver(cfg.StorageRoots, cfg.HostRoot)
+	hostname, _ := os.Hostname()
 	return &Server{
+		hostname:     strings.ToLower(hostname),
 		base:         context.Background(),
 		cfg:          cfg,
 		version:      version,
@@ -269,7 +274,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /static/", s.assets.serveStatic)
 	mux.HandleFunc("GET /{$}", s.assets.serveIndex)
-	return mux
+	return s.checkHost(mux)
 }
 
 // Responses larger than this are gzipped for clients that accept it. Below
