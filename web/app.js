@@ -292,12 +292,15 @@
   // opened. Subfolders the server has not sized yet come back pending; it
   // walks them in the background, and the live stream says when one is done.
   const svg = $("#treemap");
+  const storTbody = $("#stor-tbl").querySelector("tbody");
   let storage = null;     // walk queue status plus one summary per root
   let rootIndex = 0;
   let segs = [];          // path below the root, one directory name per level
   let listing = null;     // the directory on screen
   let items = [];         // its contents as rendered, largest first
   let navToken = 0;       // drops a slow response that a newer click overtook
+  let navWant = null;     // the folder still loading, so a refresh goes there too
+  let hint = "";          // the status last written to #tm-focus
 
   // The table starts short and grows on request. The treemap always covers the
   // whole directory, but slivers too thin to see or tap share one tile.
@@ -354,29 +357,38 @@
     return "root=" + root + "&path=" + encodeURIComponent(path.join("/"));
   }
 
-  async function navigate(root, path, keepShown) {
+  // A background refresh redraws the same folder: it keeps the hover text and
+  // the focused tile or row, which a rebuild would otherwise throw away.
+  async function navigate(root, path, keepShown, background) {
     const token = ++navToken;
+    navWant = { root: root, path: path, keepShown: keepShown };
     let l;
     try {
       const res = await fetch("/api/storage/dir?" + dirQuery(root, path));
       if (!res.ok) throw new Error("HTTP " + res.status);
       l = await res.json();
     } catch (err) {
-      if (token === navToken) $("#tm-focus").textContent = "Could not load that folder — try again.";
+      if (token === navToken) {
+        navWant = null;
+        $("#tm-focus").textContent = hint = "Could not load that folder — try again.";
+      }
       return;
     }
     if (token !== navToken) return;
+    navWant = null;
     if (root !== rootIndex) renderRootBar(root);
     rootIndex = root;
     segs = l.path ? l.path.split("/") : [];
     listing = l;
     if (!keepShown) shown = PAGE;
-    drawView();
-    $("#tm-focus").textContent = l.partial
+    drawView(background);
+    const next = l.partial
       ? "That folder is gone or can't be opened — showing the closest one that is still there."
       : l.pending
         ? "Sizing " + plural(l.pending, "folder") + " — the map fills in as each one is done."
         : (matchMedia("(pointer: fine)").matches ? "Click" : "Tap") + " a block to drill in.";
+    if (!background || next !== hint) $("#tm-focus").textContent = next;
+    hint = next;
     // The server has just queued those folders. Say so now rather than at the
     // next live frame, which brings the details.
     if (l.pending && storage && !storage.scanning) {
@@ -479,8 +491,8 @@
         '<button type="button" class="pin-go" title="' + label + '">' + label + "</button>" +
         '<button type="button" class="pin-x" aria-label="Remove pinned path">×</button></span>';
     }).join("");
-    $("#rootbar").innerHTML = rootChips + pinChips +
-      '<button class="chip pin-add" data-add="1" type="button">+ Add path</button>';
+    setHTML($("#rootbar"), rootChips + pinChips +
+      '<button class="chip pin-add" data-add="1" type="button">+ Add path</button>');
   }
 
   $("#rootbar").addEventListener("click", (ev) => {
@@ -500,11 +512,11 @@
     let root = storage.roots[rootIndex].name;
     if (segs.length && root.length > 1 && root.slice(-1) === sep()) root = root.slice(0, -1);
     const names = [root].concat(segs);
-    $("#crumbs").innerHTML = names.map((n, i) => {
+    setHTML($("#crumbs"), names.map((n, i) => {
       const last = i === names.length - 1;
       return '<button type="button" data-depth="' + i + '"' + (last ? " disabled" : "") + ">" + escapeHtml(n) + "</button>" +
         (last ? "" : '<span class="sep">' + escapeHtml(sep()) + "</span>");
-    }).join("");
+    }).join(""));
   }
 
   $("#crumbs").addEventListener("click", (ev) => {
@@ -515,10 +527,10 @@
   function emptyStorage(message) {
     listing = null;
     items = [];
-    $("#rootbar").innerHTML = "";
-    $("#crumbs").innerHTML = "";
+    setHTML($("#rootbar"), "");
+    setHTML($("#crumbs"), "");
     svg.textContent = "";
-    $("#stor-tbl").querySelector("tbody").innerHTML = "";
+    storTbody.innerHTML = "";
     $("#stor-more").hidden = true;
     $("#tm-focus").textContent = message;
     $("#stor-meta").textContent = "";
@@ -587,7 +599,7 @@
           : '<td class="num">' + bytes(d.size) + "</td>" +
             '<td class="num">' + share.toFixed(1) + "%</td></tr>");
     }
-    $("#stor-tbl").querySelector("tbody").innerHTML = html || '<tr><td colspan="3" class="muted">Empty</td></tr>';
+    storTbody.innerHTML = html || '<tr><td colspan="3" class="muted">Empty</td></tr>';
 
     const left = items.length - count;
     $("#stor-more").hidden = items.length <= PAGE;
@@ -599,7 +611,7 @@
     $("#stor-count").textContent = count + " of " + items.length;
   }
 
-  $("#stor-tbl").querySelector("tbody").addEventListener("click", (ev) => {
+  storTbody.addEventListener("click", (ev) => {
     const tr = ev.target.closest("tr.tap");
     if (tr) activate(items[+tr.dataset.i]);
   });
@@ -625,12 +637,22 @@
   $("#show-files").addEventListener("click", () => setShowFiles(!showFiles));
   renderFilesToggle();
 
-  function drawView() {
+  function drawView(background) {
+    const a = document.activeElement;
+    const inMap = svg.contains(a), inTable = storTbody.contains(a);
+    const was = background && a && a.dataset && a.dataset.i !== undefined && (inMap || inTable)
+      ? (inMap ? svg.__tm.items : items)[+a.dataset.i] : null;
     items = viewItems();
     renderCrumbs();
     drawTreemap();
     renderTable();
     renderMeta();
+    if (was) {
+      const list = inMap ? svg.__tm.items : items;
+      const i = list.findIndex((d) => d.name === was.name && d.kind === was.kind);
+      const el = i >= 0 && (inMap ? svg : storTbody).querySelector('[data-i="' + i + '"]');
+      if (el) el.focus({ preventScroll: true });
+    }
   }
 
   async function loadStorage() {
@@ -645,9 +667,11 @@
     }
     if (rootIndex >= snap.roots.length) { rootIndex = 0; segs = []; }
     renderRootBar(rootIndex);
-    // Re-read the same folder, so a walk finishing in the background fills in
-    // its sizes without kicking the user back to the root.
-    await navigate(rootIndex, segs, true);
+    // Re-read the folder on screen, or the one a click is still opening, so a
+    // walk finishing in the background neither kicks the user back to the root
+    // nor overtakes their click with the folder they just left.
+    const w = navWant && navWant.root < snap.roots.length ? navWant : { root: rootIndex, path: segs, keepShown: true };
+    await navigate(w.root, w.path, w.keepShown, w !== navWant);
   }
 
   // Every live frame carries the walk queue's status, so the progress bar
