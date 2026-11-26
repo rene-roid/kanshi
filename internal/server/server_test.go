@@ -369,3 +369,42 @@ func TestHistoryToggleIsLocalOnly(t *testing.T) {
 		t.Errorf("pinned by the environment = %d", w.Code)
 	}
 }
+
+func TestAllowedHost(t *testing.T) {
+	extra := []string{"kanshi.example.com"}
+	for host, want := range map[string]bool{
+		"localhost:8100":                       true,
+		"127.0.0.1:8100":                       true,
+		"[::1]:8100":                           true,
+		"192.168.1.5:8100":                     true,
+		"100.101.102.103":                      true,
+		"homeserver:8100":                      true,
+		"HomeServer.local:8100":                true,
+		"homeserver.home.arpa":                 true,
+		"homeserver.tail7ec1d9.ts.net.":        true,
+		"dash.localhost:8100":                  true,
+		"kanshi.example.com":                   true,
+		"attacker.example:8100":                false,
+		"homeserver.attacker.example":          false,
+		"localhost.attacker.example":           false,
+		"homeserver.example.com.attacker.test": false,
+	} {
+		if got := allowedHost(host, "homeserver", extra); got != want {
+			t.Errorf("allowedHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+// A page on another domain rebound to this machine's address must not be
+// able to read the dashboard's data, which includes file names.
+func TestRebindingHostIsRefused(t *testing.T) {
+	s := newServer(t)
+	rebound := do(s, "GET", "/api/config", func(r *http.Request) { r.Host = "attacker.example:8100" })
+	if rebound.Code != http.StatusForbidden {
+		t.Fatalf("attacker Host got %d, want 403", rebound.Code)
+	}
+	lan := do(s, "GET", "/api/config", func(r *http.Request) { r.RemoteAddr = "192.168.1.20:4000"; r.Host = "192.168.1.5:8100" })
+	if lan.Code != http.StatusOK {
+		t.Fatalf("LAN IP Host got %d, want 200", lan.Code)
+	}
+}

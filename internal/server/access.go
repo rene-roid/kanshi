@@ -153,3 +153,50 @@ func sameOrigin(r *http.Request) bool {
 	}
 	return true
 }
+
+// checkHost refuses requests addressed to a name that is not this machine's.
+// With no login, a hostile page could otherwise point its own domain at this
+// machine's address (DNS rebinding) and read everything the dashboard shows,
+// file names included, as if it were the dashboard itself.
+func (s *Server) checkHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !allowedHost(r.Host, s.hostname, s.cfg.AllowedHosts) {
+			http.Error(w, "kanshi does not answer to "+r.Host+". Open it by IP address or by this machine's name, or add the name to KANSHI_ALLOWED_HOSTS.", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// localSuffixes are the domains a home router or mDNS gives a machine. Nobody
+// outside the network can make them resolve anywhere.
+var localSuffixes = []string{"", ".local", ".lan", ".home", ".home.arpa", ".internal"}
+
+// allowedHost reports a Host header that names this machine: an IP address,
+// localhost, this machine's name on the local network, a Tailscale MagicDNS
+// name (ts.net only resolves inside the tailnet), or one listed in extra.
+func allowedHost(host, self string, extra []string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+	if _, err := netip.ParseAddr(host); err == nil {
+		return true
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".ts.net") {
+		return true
+	}
+	if self != "" {
+		for _, suffix := range localSuffixes {
+			if host == self+suffix {
+				return true
+			}
+		}
+	}
+	for _, name := range extra {
+		if strings.EqualFold(host, name) {
+			return true
+		}
+	}
+	return false
+}
