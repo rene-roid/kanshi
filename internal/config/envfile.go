@@ -30,8 +30,7 @@ func findFile(explicit string) (path string, exists bool) {
 	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
-		// A scratch container has no HOME. There is nowhere to persist to,
-		// and the access mode comes from the environment there anyway.
+		// No HOME and no XDG_CONFIG_HOME: there is nowhere to persist to.
 		return "", false
 	}
 	p := filepath.Join(dir, "kanshi", FileName)

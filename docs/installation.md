@@ -178,7 +178,7 @@ then `docker compose up -d` again to apply them.
 | `network_mode: host` | Real host network throughput, and the ability to listen on the host's LAN and Tailscale addresses |
 | `/var/run/docker.sock` (read-only) | Container stats |
 | `/` → `/hostfs` (read-only, `rslave`) | The storage map. `rslave` makes drives mounted later appear without a restart |
-| `kanshi-data` → `/data` | The folder size cache, so an update or restart does not measure the disk again |
+| `kanshi-data` → `/data` | The folder size cache, so an update or restart does not measure the disk again; the history, when it is on; and `kanshi.env`, where the dashboard saves the Network and History settings |
 | `cap_add: DAC_READ_SEARCH` | Read any directory, so the map is complete. Does not allow writing |
 | `read_only`, `cap_drop: ALL`, `no-new-privileges` | Nothing else |
 | `cpus: 1.0`, `mem_limit: 96m` | A ceiling; normal use is a fraction of this |

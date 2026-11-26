@@ -42,6 +42,8 @@ ENV KANSHI_HOST_ROOT=/hostfs
 # root filesystem is read-only, so this has to be a volume.
 ENV KANSHI_STORAGE_CACHE=/data/storage.cache
 ENV KANSHI_HISTORY_DIR=/data/history
+# The dashboard's Network and History switches save here.
+ENV KANSHI_CONFIG=/data/kanshi.env
 VOLUME /data
 
 EXPOSE 8100
