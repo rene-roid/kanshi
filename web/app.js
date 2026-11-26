@@ -17,6 +17,13 @@
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
+  // The server's error text is written for people, so it is passed through.
+  async function getJSON(url, init) {
+    const res = await fetch(url, init);
+    if (!res.ok) throw new Error((await res.text()).trim() || "HTTP " + res.status);
+    return res.json();
+  }
+
   /* ── formatting ─────────────────────────────────────────────────────── */
   function bytes(n) {
     if (n === null || n === undefined || isNaN(n)) return "—";
@@ -757,7 +764,7 @@
     points: [],               // [t, cpu%, mem%], oldest first
     at: null,                 // the record on screen, or null when live
   };
-  let lastLive = null, lastLiveStamp = "", tlToken = 0;
+  let lastLive = null, lastLiveStamp = "", tlToken = 0, tlLoad = 0;
 
   function clock(t, withDate) {
     const d = new Date(t * 1000);
@@ -770,18 +777,22 @@
     return chip ? chip.textContent + " ago" : "";
   }
 
+  // Resolves to whether the server answered. Only the newest load draws, so
+  // quick range clicks cannot leave a different range on screen than the chip.
   async function loadTimeline() {
+    const token = ++tlLoad;
     const to = Math.floor(Date.now() / 1000), from = to - tl.range;
     // About one point per pixel: finer than that is invisible.
     const n = Math.max(60, Math.min(1000, Math.round(tlSvg.getBoundingClientRect().width) || 600));
     let h;
-    try { h = await (await fetch("/api/history?from=" + from + "&to=" + to + "&n=" + n)).json(); } catch (e) { return; }
+    try { h = await getJSON("/api/history?from=" + from + "&to=" + to + "&n=" + n); } catch (e) { return false; }
+    if (token !== tlLoad) return true;
     histInfo = h;
     $("#timeline").hidden = !h.enabled;
     if (!h.enabled) {
       // Turned off while looking back: there is nothing left to look at.
       if (tl.at !== null) goLive();
-      return;
+      return true;
     }
     tl.from = from; tl.to = to;
     tl.points = h.points;
@@ -793,6 +804,7 @@
     });
     $("#tl-from").textContent = rangeLabel();
     drawTimeline();
+    return true;
   }
 
   function tx(t) { return TL_LEFT + (t - tl.from) / (tl.to - tl.from) * (tl.w - TL_LEFT); }
@@ -976,7 +988,6 @@
   // decides whether this page may change it (only from this computer, and only
   // when the environment does not pin it); the dialog shows what it was told.
   let histInfo = null;
-  const histDlg = $("#hist-dlg");
   const DAY_CHOICES = [1, 7, 30];
 
   function renderHistoryDialog() {
@@ -995,32 +1006,40 @@
   }
   $("#hist-on").addEventListener("change", () => { $("#hist-days").disabled = !$("#hist-on").checked; });
 
-  $("#hist-open").addEventListener("click", async () => {
-    $("#hist-err").textContent = "";
-    await loadTimeline();
-    if (!histInfo) return;
-    renderHistoryDialog();
-    histDlg.showModal();
-  });
+  // History and Network are one dialog underneath: read the setting, show it,
+  // post a change. load resolves to the setting, or null when unreachable.
+  function settingDialog(id, url, load, render, body, saved) {
+    const err = $("#" + id + "-err");
+    $("#" + id + "-open").addEventListener("click", async () => {
+      err.textContent = "";
+      if (await load()) render();
+      else {
+        err.textContent = "Could not reach kanshi. Try again.";
+        $("#" + id + "-opts").disabled = true;
+        $("#" + id + "-save").hidden = true;
+      }
+      $("#" + id + "-dlg").showModal();
+    });
+    $("#" + id + "-save").addEventListener("click", async () => {
+      err.textContent = "";
+      try {
+        const st = await getJSON(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Kanshi": "1" },
+          body: JSON.stringify(body()),
+        });
+        saved(st);
+        render();
+        if (st.reason) err.textContent = st.reason;
+      } catch (e) {
+        err.textContent = "Could not change it: " + e.message;
+      }
+    });
+  }
 
-  $("#hist-save").addEventListener("click", async () => {
-    const days = $("#hist-on").checked ? +$("#hist-days").value : 0;
-    $("#hist-err").textContent = "";
-    try {
-      const res = await fetch("/api/history", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Kanshi": "1" },
-        body: JSON.stringify({ days: days }),
-      });
-      if (!res.ok) throw new Error((await res.text()).trim() || "HTTP " + res.status);
-      histInfo = await res.json();
-      renderHistoryDialog();
-      if (histInfo.reason) $("#hist-err").textContent = histInfo.reason;
-      loadTimeline();
-    } catch (err) {
-      $("#hist-err").textContent = "Could not change it: " + err.message;
-    }
-  });
+  settingDialog("hist", "/api/history", async () => (await loadTimeline()) && histInfo, renderHistoryDialog,
+    () => ({ days: $("#hist-on").checked ? +$("#hist-days").value : 0 }),
+    (st) => { histInfo = st; loadTimeline(); });
 
   /* ── live stream ────────────────────────────────────────────────────── */
   let source = null, retry = 1000, retryTimer = null;
@@ -1136,41 +1155,17 @@
   });
 
   async function loadAccess() {
-    try {
-      access = await (await fetch("/api/access")).json();
-    } catch (err) { return; }
+    try { access = await getJSON("/api/access"); } catch (err) { return null; }
     renderAccessLine();
     if (dlg.open) renderAccessDialog();
+    return access;
   }
 
-  $("#access-open").addEventListener("click", async () => {
-    $("#access-err").textContent = "";
-    await loadAccess();
-    if (!access) return;
-    renderAccessDialog();
-    dlg.showModal();
-  });
-
-  $("#access-save").addEventListener("click", async () => {
+  settingDialog("access", "/api/access", loadAccess, renderAccessDialog, () => {
     const extra = (access.mode || "").split(",").filter((t) => ["local", "lan", "tailscale", "all", ""].indexOf(t) < 0);
     const picked = box("all").checked ? ["all"] : ["lan", "tailscale"].filter((n) => box(n).checked);
-    const mode = picked.concat(box("all").checked ? [] : extra).join(",") || "local";
-    $("#access-err").textContent = "";
-    try {
-      const res = await fetch("/api/access", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Kanshi": "1" },
-        body: JSON.stringify({ mode: mode }),
-      });
-      if (!res.ok) throw new Error((await res.text()).trim() || "HTTP " + res.status);
-      access = await res.json();
-      renderAccessLine();
-      renderAccessDialog();
-      if (access.reason) $("#access-err").textContent = access.reason;
-    } catch (err) {
-      $("#access-err").textContent = "Could not change it: " + err.message;
-    }
-  });
+    return { mode: picked.concat(box("all").checked ? [] : extra).join(",") || "local" };
+  }, (st) => { access = st; renderAccessLine(); });
 
   fetch("/api/config").then((r) => r.json()).then((c) => {
     appVersion = c.version || "";
