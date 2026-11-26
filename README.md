@@ -87,7 +87,7 @@ With Node.js 18+ and Docker installed, this runs the same Compose setup without 
 
 ```sh
 npx @yuuki824/kanshi           # start
-npx @yuuki824/kanshi update    # pull the newest image and restart
+npx @yuuki824/kanshi@latest update    # pull the newest image and restart
 npx @yuuki824/kanshi down      # stop
 ```
 
@@ -138,6 +138,7 @@ Precedence is: flag, then environment, then file, then the default.
 | `KANSHI_STORAGE_ROOTS` | | `auto` | Folders in the storage map: `auto`, `path`, or `label=path`, comma-separated. `auto,/srv` adds to the defaults |
 | `KANSHI_STORAGE_EXCLUDE` | | *(none)* | Folders to skip entirely, e.g. `/var/lib/docker` |
 | `KANSHI_STORAGE_INTERVAL` | | `21600` | Seconds a folder's size is trusted before opening the folder above it measures it again |
+| `KANSHI_STORAGE_MIN_RESCAN` | | `30` | Seconds within which **Rescan** leaves a just-measured folder alone |
 | `KANSHI_STORAGE_CPU` | | `10` | Share of one core, in %, measuring folders may use. `100` = unthrottled |
 | `KANSHI_TREE_DEPTH` | | `4` | Folder levels remembered from each measurement; deeper folders are measured when you open them |
 | `KANSHI_STORAGE_CACHE` | | `~/.cache/kanshi/storage.cache`, `%LocalAppData%\kanshi\storage.cache`; `/data/storage.cache` in the image | Where folder sizes are cached, so a restart does not measure them again |
@@ -148,6 +149,7 @@ Precedence is: flag, then environment, then file, then the default.
 | `KANSHI_IDLE_TIMEOUT` | | `30` | Seconds with no browser before everything stops |
 | `KANSHI_DOCKER_CONCURRENCY` | | `8` | Parallel container stat requests |
 | `DOCKER_HOST` | | platform default | Docker endpoint: `unix://…`, `npipe://…` or `tcp://…` |
+| `KANSHI_DOCKER_SOCKET` | | *(none)* | A bare socket path, used when `DOCKER_HOST` is not set |
 | `KANSHI_HOST_ROOT` | | *(none; `/hostfs` in the image)* | Where the host's `/` is mounted when running in a container |
 | `KANSHI_WEB_DIR` | | *(embedded)* | Serve the frontend from disk, for frontend development |
 
@@ -172,7 +174,7 @@ again. **Rescan** re-measures the folders on screen.
 
 - **Windows / Linux binary:** download the new file from [Releases](https://github.com/rene-roid/kanshi/releases) and replace the old one.
 - **Compose:** `docker compose pull && docker compose up -d`
-- **npx:** `npx @yuuki824/kanshi update`
+- **npx:** `npx @yuuki824/kanshi@latest update`
 
 ## Building from source
 
@@ -191,9 +193,10 @@ Set `KANSHI_WEB_DIR=./web` to serve it from disk while editing.
 ## Releasing
 
 Releases are made by the **Release** workflow, run by hand: *Actions → Release → Run workflow*, enter a version
-such as `v0.2.0`. It runs the full test suite on Linux and Windows, builds the Windows and Linux executables
+such as `v0.4.0`. It runs the full test suite on Linux and Windows, builds the Windows and Linux executables
 (x64 and ARM64), pushes a multi-arch image to `ghcr.io/rene-roid/kanshi`, and publishes a GitHub release with
-the executables, checksums and install notes. After the very first release, set the package's visibility to
+the executables, checksums and install notes. The npm launcher is published separately: bump `version` in
+`package.json` to match, then `npm publish`. After the very first release, set the package's visibility to
 **Public** under the repository's *Packages* settings so `docker pull` works without logging in.
 
 ## API

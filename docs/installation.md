@@ -183,7 +183,7 @@ then `docker compose up -d` again to apply them.
 | `read_only`, `cap_drop: ALL`, `no-new-privileges` | Nothing else |
 | `cpus: 1.0`, `mem_limit: 96m` | A ceiling; normal use is a fraction of this |
 
-Pin a version with `KANSHI_VERSION=0.2.0` in `.env`; the default is `latest`.
+Pin a version with `KANSHI_VERSION=0.4.0` in `.env`; the default is `latest`.
 
 To build the image from a checkout instead of pulling it: `docker compose up -d --build`.
 
@@ -195,7 +195,7 @@ With Node.js 18+ and Docker (Compose v2) installed:
 
 ```sh
 npx @yuuki824/kanshi                 # start it
-npx @yuuki824/kanshi update          # pull the newest image and restart
+npx @yuuki824/kanshi@latest update   # pull the newest image and restart
 npx @yuuki824/kanshi logs -f         # follow the logs
 npx @yuuki824/kanshi down            # stop and remove it
 ```
@@ -238,7 +238,7 @@ and a specific address means that address plus localhost.
 | Windows `.exe` | Download the new `.exe` and replace the old one |
 | Linux binary | Download the new binary, replace it, `sudo systemctl restart kanshi` if it runs as a service |
 | Docker Compose | `docker compose pull && docker compose up -d` |
-| npx | `npx @yuuki824/kanshi update` |
+| npx | `npx @yuuki824/kanshi@latest update` (`@latest`, so npx does not reuse a cached older launcher) |
 
 Settings files are untouched by an update.
 

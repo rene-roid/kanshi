@@ -35,6 +35,7 @@ services:
       # A cached folder size older than this many seconds is measured again
       # the next time the folder around it is opened.
       KANSHI_STORAGE_INTERVAL: "${KANSHI_STORAGE_INTERVAL:-21600}"
+      KANSHI_STORAGE_MIN_RESCAN: "${KANSHI_STORAGE_MIN_RESCAN:-30}"
       # Host paths to skip. /var/lib/docker is ~100k overlay2 files and
       # dominates the walk time — set it here to trim the walk.
       KANSHI_STORAGE_EXCLUDE: "${KANSHI_STORAGE_EXCLUDE:-}"

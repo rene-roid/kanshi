@@ -1,6 +1,6 @@
 {
   "name": "@yuuki824/kanshi",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Launch the Kanshi homeserver dashboard with npx.",
   "license": "AGPL-3.0-only",
   "bin": {
