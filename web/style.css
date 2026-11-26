@@ -92,6 +92,9 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   --page-max: 760px;
   --gutter: 12px;
+  /* viewport-fit=cover lets the page run under a landscape notch. */
+  --pad-l: max(var(--gutter), env(safe-area-inset-left));
+  --pad-r: max(var(--gutter), env(safe-area-inset-right));
   margin: 0;
   padding: 0 0 env(safe-area-inset-bottom);
   background: var(--plane);
@@ -110,8 +113,9 @@ body.is-stale { opacity: .55; }          /* hold the last render, never a skelet
 .topbar {
   position: sticky; top: 0; z-index: 10;
   display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; padding: 10px 16px calc(10px + env(safe-area-inset-top)) 16px;
-  padding-top: calc(10px + env(safe-area-inset-top));
+  gap: 12px;
+  padding: calc(10px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+    10px max(16px, env(safe-area-inset-left));
   background: color-mix(in srgb, var(--plane) 88%, transparent);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
@@ -130,7 +134,7 @@ body.is-stale { opacity: .55; }          /* hold the last render, never a skelet
 .conn.live i { background: var(--status-good); }
 .conn.down i { background: var(--status-critical); }
 
-main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 28px; display: grid; gap: 12px; min-width: 0; }
+main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--pad-r) 28px var(--pad-l); display: grid; gap: 12px; min-width: 0; }
 
 /* ── Cards ───────────────────────────────────────────────────────────────── */
 .card {
@@ -212,7 +216,7 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
 .rootbar, .sortbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
 .sortbar[hidden] { display: none; }
 .chip {
-  font: inherit; font-size: 12px; padding: 5px 11px; min-height: 30px;
+  font: inherit; font-size: 12px; padding: 5px 11px; min-height: 32px;
   border-radius: 999px; border: 1px solid var(--border);
   background: transparent; color: var(--text-muted); cursor: pointer;
 }
@@ -223,14 +227,18 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
 
 /* Pinned custom paths: a chip made of two buttons (jump, remove) rather than
    one, so the base .chip padding has to move onto the inner buttons. */
-.chip.pin { display: inline-flex; align-items: center; gap: 0; padding: 0; max-width: 100%; }
+/* The outline is a shadow so the two buttons get the chip's full 32px height. */
+.chip.pin {
+  display: inline-flex; align-items: stretch; gap: 0; padding: 0; max-width: 100%;
+  border: 0; box-shadow: inset 0 0 0 1px var(--border);
+}
 .chip.pin .pin-go {
   font: inherit; font-size: 12px; padding: 5px 4px 5px 11px; border: 0;
   background: transparent; color: var(--text-muted); cursor: pointer;
   max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .chip.pin .pin-x {
-  font: inherit; font-size: 13px; line-height: 1; padding: 5px 10px 5px 4px;
+  font: inherit; font-size: 13px; line-height: 1; padding: 0 10px 0 4px; min-width: 32px;
   border: 0; background: transparent; color: var(--text-muted); cursor: pointer;
 }
 .chip.pin .pin-x:hover { color: var(--status-critical); }
@@ -373,7 +381,7 @@ tr.is-stopped { opacity: .55; }
 /* ── History timeline ────────────────────────────────────────────────────── */
 .timeline .card-head { align-items: center; margin-bottom: 8px; }
 .rangebar { display: flex; gap: 4px; }
-.rangebar .chip { min-height: 26px; padding: 3px 9px; }
+.rangebar .chip { padding: 3px 9px; }
 .tl-legend { margin-bottom: 6px; }
 /* Line keys, not boxes: the legend names a line, so it shows one. */
 .key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
@@ -427,7 +435,10 @@ body.is-history .scoped { box-shadow: inset 3px 0 0 var(--text-muted); }
   body { --page-max: 1180px; --gutter: 20px; }
   main { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-block: 16px 32px; gap: 16px; }
   /* Line the title up with the cards, which stop growing at --page-max. */
-  .topbar { padding-inline: max(var(--gutter), calc((100% - var(--page-max)) / 2 + var(--gutter))); }
+  .topbar {
+    padding-left: max(var(--pad-l), calc((100% - var(--page-max)) / 2 + var(--gutter)));
+    padding-right: max(var(--pad-r), calc((100% - var(--page-max)) / 2 + var(--gutter)));
+  }
   main > * { grid-column: 1 / -1; }
   .card-cpu, .card-mem { grid-column: auto; }
   .card { padding: 18px; }
