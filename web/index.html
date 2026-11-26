@@ -28,11 +28,11 @@
     <div class="card-head">
       <h2 id="tl-h">History</h2>
       <div class="rangebar" id="tl-range" role="group" aria-label="Time range">
-        <button class="chip" data-range="900" type="button">15m</button>
-        <button class="chip is-on" data-range="3600" type="button">1h</button>
-        <button class="chip" data-range="21600" type="button">6h</button>
-        <button class="chip" data-range="86400" type="button">24h</button>
-        <button class="chip" data-range="604800" type="button">7d</button>
+        <button class="chip" data-range="900" type="button" aria-pressed="false">15m</button>
+        <button class="chip is-on" data-range="3600" type="button" aria-pressed="true">1h</button>
+        <button class="chip" data-range="21600" type="button" aria-pressed="false">6h</button>
+        <button class="chip" data-range="86400" type="button" aria-pressed="false">24h</button>
+        <button class="chip" data-range="604800" type="button" aria-pressed="false">7d</button>
       </div>
     </div>
     <ul class="legend tl-legend">
@@ -82,11 +82,11 @@
       <h2 id="stor-h">Storage map</h2>
       <button id="rescan" class="btn" type="button" title="Measure the folders shown here again">Rescan</button>
     </div>
-    <div class="scan-progress" id="scan-progress" hidden aria-live="polite">
+    <div class="scan-progress" id="scan-progress" hidden>
       <div class="meter-track"><div class="meter-fill" id="scan-progress-fill" style="width:0%"></div></div>
       <p class="muted small" id="scan-progress-label"></p>
     </div>
-    <div class="rootbar" id="rootbar" role="tablist" aria-label="Storage root"></div>
+    <div class="rootbar" id="rootbar" role="group" aria-label="Storage roots and pinned paths"></div>
     <form class="pinform" id="pinform" hidden>
       <input id="pinform-input" type="text" placeholder="/mnt/data/media/movies" autocomplete="off" spellcheck="false">
       <button class="btn" type="submit">Go</button>
@@ -95,9 +95,10 @@
     </form>
     <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
     <div class="treemap-wrap">
-      <svg id="treemap" role="img" aria-labelledby="stor-h" preserveAspectRatio="none"></svg>
+      <svg id="treemap" role="group" aria-labelledby="stor-h" preserveAspectRatio="none"></svg>
     </div>
-    <p id="tm-focus" class="focusline muted small" aria-live="polite">Tap a block to drill in.</p>
+    <p id="tm-focus" class="focusline muted small">Tap a block to drill in.</p>
+    <p id="stor-status" class="visually-hidden" role="status"></p>
     <div class="tm-bar">
       <ul class="legend">
         <li><span class="g">▸</span>folder</li>
@@ -128,10 +129,10 @@
     </div>
     <p id="ctr-empty" class="muted small" hidden>Docker was not found on this machine. Containers appear here once it is running.</p>
     <div class="sortbar" role="group" aria-label="Sort containers">
-      <button class="chip is-on" data-sort="cpu" type="button">CPU</button>
-      <button class="chip" data-sort="mem" type="button">Memory</button>
-      <button class="chip" data-sort="net" type="button">Network</button>
-      <button class="chip" data-sort="name" type="button">Name</button>
+      <button class="chip is-on" data-sort="cpu" type="button" aria-pressed="true">CPU</button>
+      <button class="chip" data-sort="mem" type="button" aria-pressed="false">Memory</button>
+      <button class="chip" data-sort="net" type="button" aria-pressed="false">Network</button>
+      <button class="chip" data-sort="name" type="button" aria-pressed="false">Name</button>
     </div>
     <table class="tbl ctr-tbl" id="ctr-tbl">
       <caption class="visually-hidden">Per-container CPU, memory and network</caption>

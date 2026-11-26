@@ -9,13 +9,17 @@
   --surface-1:      #fcfcfb;
   --text-primary:   #0b0b0b;
   --text-secondary: #52514e;
-  --text-muted:     #898781;
+  --text-muted:     #73726d;
   --gridline:       #e1e0d9;
   --baseline:       #c3c2b7;
   --border:         rgba(11, 11, 11, 0.10);
 
   --series-1:       #2a78d6;   /* categorical slot 1: CPU */
   --series-2:       #eb6834;   /* categorical slot 2: RAM, on the timeline only */
+  /* Controls, not data: a step darker than slot 1 so small text clears 4.5:1,
+     as a link on the surface and as white type on a filled chip. */
+  --accent:         #2771ca;
+  --accent-fill:    #2771ca;
   --neutral-mark:   #c3c2b7;   /* aggregated "other" — deliberately not a slot */
   --tile:           #1c5cab;   /* blue ramp step 550; white label = 7.1:1 */
   --tile-ink:       #ffffff;
@@ -45,6 +49,8 @@
     --border:         rgba(255, 255, 255, 0.10);
     --series-1:       #3987e5;
     --series-2:       #d95926;
+    --accent:         #3987e5;
+    --accent-fill:    #3176c9;
     --neutral-mark:   #55544f;
     --tile:           #256abf;
     --tile-ink:       #ffffff;
@@ -67,6 +73,8 @@
   --border:         rgba(255, 255, 255, 0.10);
   --series-1:       #3987e5;
   --series-2:       #d95926;
+  --accent:         #3987e5;
+  --accent-fill:    #3176c9;
   --neutral-mark:   #55544f;
   --tile:           #256abf;
   --tile-ink:       #ffffff;
@@ -208,7 +216,7 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
   border-radius: 999px; border: 1px solid var(--border);
   background: transparent; color: var(--text-muted); cursor: pointer;
 }
-.chip.is-on { background: var(--series-1); border-color: transparent; color: #fff; }
+.chip.is-on { background: var(--accent-fill); border-color: transparent; color: #fff; }
 /* Paths can be arbitrarily long; a wrapping row still can't shrink a single
    over-wide item, so each chip truncates at the container's width. */
 .rootbar .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -241,7 +249,7 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
 .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-bottom: 8px; font-size: 12px; }
 .crumbs button {
   font: inherit; font-size: 12px; background: none; border: 0; padding: 4px 5px;
-  color: var(--series-1); cursor: pointer; border-radius: 5px; min-height: 28px;
+  color: var(--accent); cursor: pointer; border-radius: 5px; min-height: 28px;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .crumbs button[disabled] { color: var(--text-muted); cursor: default; }
@@ -278,7 +286,8 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
 .tbl tr:last-child td { border-bottom: 0; }
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tbl tbody tr.tap { cursor: pointer; }
-.tbl tbody tr.tap:hover td { background: var(--ghost); }
+.tbl tbody tr.tap:hover td, .tbl tbody tr.tap:focus-visible td { background: var(--ghost); }
+.tbl tbody tr.tap:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #stor-tbl td:first-child, #stor-tbl th:first-child { max-width: 0; width: 60%; }
 .more { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .more[hidden], .more .btn[hidden] { display: none; }
@@ -305,9 +314,8 @@ main { max-width: var(--page-max); margin: 0 auto; padding: 12px var(--gutter) 2
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* Only the separator is dimmed to --baseline, and only because it is pure
-   punctuation. Everything carrying a number stays at --text-secondary: at 11px
-   these are small text, and --text-muted would put them at 3.5:1 in light mode.
-   Hierarchy comes from the underline instead, which costs no contrast. */
+   punctuation. Everything carrying a number stays at --text-secondary, and
+   hierarchy comes from the underline instead, which costs no contrast. */
 .ctr-ports .sep { font-style: normal; color: var(--baseline); padding: 0 5px; }
 .ctr-ports .arr { font-style: normal; padding: 0 1px; }
 .ctr-ports .pr { font-style: normal; padding-left: 3px; }
@@ -348,7 +356,7 @@ tr.is-stopped { opacity: .55; }
 .dlg input[type="checkbox"] { margin: 2px 0 0; width: 16px; height: 16px; flex: none; accent-color: var(--series-1); }
 .dlg .links { list-style: none; margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid var(--gridline); display: grid; gap: 4px; font-size: 12px; }
 .dlg .links:empty { display: none; }
-.dlg .links a { color: var(--series-1); overflow-wrap: anywhere; }
+.dlg .links a { color: var(--accent); overflow-wrap: anywhere; }
 .dlg .links .k { display: inline-block; min-width: 96px; margin-right: 8px; color: var(--text-muted); }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 /* A setting that belongs to the checkbox above it, indented to its text. */
@@ -358,7 +366,7 @@ tr.is-stopped { opacity: .55; }
   border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary);
 }
 .dlg select:disabled { opacity: .5; }
-.btn-primary { background: var(--series-1); border-color: transparent; color: #fff; }
+.btn-primary { background: var(--accent-fill); border-color: transparent; color: #fff; }
 .err { margin: 0; color: var(--status-critical); }
 .err:empty { display: none; }
 
